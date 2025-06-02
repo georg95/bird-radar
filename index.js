@@ -6,7 +6,7 @@
     const audioviz = document.createElement('canvas')
     audioviz.id = 'audioviz'
     audioviz.height = 256
-    audioviz.width = document.body.clientWidth
+    audioviz.width = document.getElementById('header').clientWidth - 40
     const recordButton = document.createElement('button')
     recordButton.id = 'record'
     recordButton.className = 'start'
@@ -154,22 +154,26 @@ function birdDetected(bird) {
     birdView.id = bird
     const birdImage = document.createElement('img')
     birdImage.src = `birds/${bird[0]}/${bird}.jpg`
+    birdImage.onerror = () => { birdImage.src='birds/unknown.webp' }
     const birdCounter = document.createElement('div')
     birdCounter.className = 'counter'
     birdCounter.innerText = '1'
+    const birdName = document.createElement('span')
+    birdName.innerText = bird
     birdView.appendChild(birdImage)
     birdView.appendChild(birdCounter)
+    birdView.appendChild(birdName)
     birdListNode.insertBefore(birdView, firstBird)
 }
 
 async function testBirdsUI() {
-    const birdsTestList = ['Cyanistes caeruleus', 'Parus major', 'Pica pica', 'Passer domesticus', 'Passer montanus']
+    const birdsTestList = ['notfound', 'Cyanistes caeruleus', 'Parus major', 'Pica pica', 'Passer domesticus', 'Passer montanus']
     for (let i = 0; i < 12; i++) {
         await new Promise(res => setTimeout(res, 1000))
         birdDetected(birdsTestList[Math.random() * birdsTestList.length | 0])
     }
 }
-// testBirdsUI()
+testBirdsUI()
 
 function audioViz(context, source) {
     const [W, H] = [window.audioviz.width, window.audioviz.height]
