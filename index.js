@@ -3,29 +3,29 @@
 (async function main() {
     const { birds, BirdNetJS } = await initBirdPredictionModel()
 
-    const audioviz = document.createElement('canvas')
-    audioviz.id = 'audioviz'
-    audioviz.height = 256
-    audioviz.width = document.getElementById('header').clientWidth - 40
-    const recordButton = document.createElement('button')
-    recordButton.id = 'record'
-    recordButton.className = 'start'
-    document.getElementById('header').append(audioviz, recordButton)
+    document.getElementById('loading-pane').style.display = 'none'
+    document.getElementById('record-pane').style.display = 'block'
 
     let audioContext = null
-    recordButton.onclick = async () => {
+    document.getElementById('record').onclick = async () => {
         if (!audioContext) {
-            recordButton.className = 'stop';
-            ({ audioContext } = await listen({ birds, BirdNetJS }))
+            document.getElementById('record-icon').className = 'waiting-icon'
+            document.getElementById('record').style.display = 'none'
+            audioContext = await listen({ birds, BirdNetJS })
+            document.getElementById('record').className = 'stop'
+            document.getElementById('record').style.display = ''
+            document.getElementById('record-icon').className = ''
         } else {
+            document.getElementById('record-icon').className = 'paused-icon'
+            document.getElementById('record').className = 'start'
             audioContext.close()
             audioContext = null
-            recordButton.className = 'start'
         }
     }
 })()
 
 async function listen({ birds, BirdNetJS }) {
+    // await new Promise(res => setTimeout(res, 1000))
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
     const audioContext = new AudioContext({ sampleRate: 48000 })
     await audioContext.audioWorklet.addModule('audio-recorder.js')
@@ -35,8 +35,6 @@ async function listen({ birds, BirdNetJS }) {
     const gain = audioContext.createGain();
     gain.gain.value = 0; // mute output
     workletNode.connect(gain).connect(audioContext.destination);
-
-    audioViz(audioContext, source)
     let audioProcessed = 0
     let audioStart = Date.now()
     workletNode.port.onmessage = async (event) => {
@@ -53,7 +51,7 @@ async function listen({ birds, BirdNetJS }) {
         console.log('recogized:', guessList)
         guessList.forEach(birdDetected)
     }
-    return { audioContext }
+    return audioContext
 }
 function RingBuffer(size) {
     const buf = new Float32Array(size)
@@ -83,9 +81,8 @@ async function initBirdPredictionModel() {
         })
     }
     await tf.setBackend('webgl')
-    const progress = document.createElement('progress')
-    const progressText = document.createElement('span')
-    document.getElementById('header').append(progress, progressText)
+    const progress = document.querySelector('#loading-pane progress')
+    const progressText = document.querySelector('#loading-pane span')
     progress.max = 100
     progress.value = 0
     let currentProgress = 0
@@ -130,8 +127,6 @@ async function initBirdPredictionModel() {
     await BirdNetJS.predict(tf.zeros([1, 144000]), { batchSize: 1 }).data()
     tf.engine().endScope()
 
-    document.getElementById('header').removeChild(progressText)
-    document.getElementById('header').removeChild(progress)
     return { birds, BirdNetJS }
 }
 let birdsList = {}
@@ -169,35 +164,6 @@ async function testBirdsUI() {
         await new Promise(res => setTimeout(res, 1000))
         birdDetected(birdsTestList[Math.random() * birdsTestList.length | 0])
     }
-}
-
-function audioViz(context, source) {
-    const [W, H] = [window.audioviz.width, window.audioviz.height]
-    const ctx = window.audioviz.getContext("2d")
-    ctx.fillStyle = "#222"
-    ctx.fillRect(0, 0, W, H)
-    const analyser = new AnalyserNode(context, { fftSize: 512, smoothingTimeConstant: 0.1 })
-    source.connect(analyser)
-    const bufferLength = analyser.frequencyBinCount
-    const dataArray = new Uint8Array(bufferLength)
-
-    function drawAudioViz() {
-        analyser.getByteFrequencyData(dataArray)
-        const imageData = ctx.createImageData(1, H)
-        for (let i = 0; i < imageData.data.length; i += 4) {
-            const volume = dataArray[dataArray.length - 1 - i / 4] / 256 * (256 - 0x22) + 0x22
-            imageData.data[i + 0] = volume // R
-            imageData.data[i + 1] = volume // G
-            imageData.data[i + 2] = volume // B
-            imageData.data[i + 3] = 255 // A
-        }
-        ctx.putImageData(imageData, 0, 0)
-        ctx.drawImage(window.audioviz, 1, 0)
-        if (context.state !== 'closed') {
-            requestAnimationFrame(drawAudioViz)
-        }
-    }
-    drawAudioViz()
 }
 
 class MelSpecLayerSimple extends tf.layers.Layer {

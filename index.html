@@ -11,7 +11,6 @@
     <title>Bird Radar</title>
     <style>
         html, body {
-            height: 100%;
             width: 100%;
             background-color: #222;
             font-size: 15px;
@@ -27,14 +26,11 @@
             border: 1px solid;
         }
         header {
-            width: calc(100% - 40px);
-            position: relative;
-            display: flex;
-            flex-direction: column;
-            margin: 20px;
-            margin-top: 0;
+            width: 100%;
+            height: 200px;
+            padding: 20px;
             box-sizing: border-box;
-            justify-content: center;
+            position: relative;
         }
         #record {
             width: 100px;
@@ -91,11 +87,31 @@
         #error {
             color: rgb(224, 99, 99);
         }
-        #log, #error {
+        #error {
             margin: 20px;
         }
 
-        .circle, .circle::before {
+        #record-icon {
+            position: absolute;
+            left: 35px;
+            top: 35px;
+        }
+        #record-icon::before {
+            animation: pulse 1s infinite;
+            position: absolute;
+            background-color: #00FF55
+        }
+        #record-icon.paused-icon, #record-icon.paused-icon::before {
+            border-radius: 3px;
+            background-color: #FF0055;
+            animation: none;
+        }
+        #record-icon.waiting-icon, #record-icon.waiting-icon::before {
+            border-radius: 3px;
+            background-color: #ffae00;
+            animation: none;
+        }
+        #record-icon, #record-icon::before {
             content: " ";
             margin: 15px;
             width: 15px;
@@ -103,33 +119,33 @@
             border-radius: 50%;
             margin: 0 auto;
             transition: all 1s;
-            background-color: #FF0055;
+            background-color: #00FF55;
         }
-
-        .circle::before {
-            animation: mymove 1s infinite;
-            position: absolute;
-            background-color: #ff0055
-        }
-
-        @-webkit-keyframes mymove {
-            0%   {
+        @-webkit-keyframes pulse {
+            0% {
                 transform: scale(1);
                 opacity: 1
             }
-            100%   {
+            100% {
                 transform: scale(2.5);
                 opacity: 0
             }
         }
+        #record-pane {
+            display: none;
+        }
     </style>
 </head>
 <body>
-    <header id="header">
-        <div class="circle"></div>
+    <header id="loading-pane">
+        <progress></progress>
+        <span>Initializing...</span>
+    </header>
+    <header id="record-pane">
+        <div id="record-icon" class="paused-icon"></div>
+        <button id="record" class="start"></button>
     </header>
     <div id="error"></div>
-    <div id="log"></div>
     <div id="birdlist"></div>
 </body>
 </html>
