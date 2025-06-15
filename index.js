@@ -54,7 +54,11 @@ async function listen({ birds, BirdNetJS }) {
         }
         let guessList = []
         for (let i = 0; i < prediction.length; i++) {
-            if (prediction[i] > 0.1 && birds[i].geoscore > 0.0) {
+            let geoscore = 1
+            if (birds[i].geoscore !== undefined) {
+                geoscore = birds[i].geoscore
+            }
+            if (prediction[i] > 0.35 && geoscore > 0.1) {
                 guessList.push(birds[i].name)
             }
         }
