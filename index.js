@@ -4,19 +4,20 @@
     const { birds, BirdNetJS } = await initBirdPredictionModel()
 
     document.getElementById('loading-pane').style.display = 'none'
-    document.getElementById('record-pane').style.display = 'block'
+    document.getElementById('record-pane').style.display = 'flex'
 
     let audioContext = null
     document.getElementById('record').onclick = async () => {
         if (!audioContext) {
+            document.getElementById('record').className = ''
             document.getElementById('record-icon').className = 'waiting-icon'
-            document.getElementById('record').style.display = 'none'
             audioContext = await listen({ birds, BirdNetJS })
             document.getElementById('record').className = 'stop'
-            document.getElementById('record').style.display = ''
             document.getElementById('record-icon').className = ''
+            document.getElementById('record-status').innerText = 'Recording'
         } else {
             document.getElementById('record-icon').className = 'paused-icon'
+            document.getElementById('record-status').innerText = 'Recording paused'
             document.getElementById('record').className = 'start'
             audioContext.close()
             audioContext = null
@@ -36,19 +37,27 @@ async function listen({ birds, BirdNetJS }) {
     gain.gain.value = 0; // mute output
     workletNode.connect(gain).connect(audioContext.destination);
     let audioProcessed = 0
-    let audioStart = Date.now()
     workletNode.port.onmessage = async (event) => {
         const chunk = new Float32Array(event.data)
         audioProcessed += 3000
-        console.log('Received audio chunk, processed:', audioProcessed, 'time passed:', Date.now() - audioStart);
+        const start = Date.now()
+        tf.engine().startScope()
         const prediction = await BirdNetJS.predict(tf.tensor([chunk])).data()
+        tf.engine().endScope()
+        const load = Math.round((Date.now() - start) / 30)
+        document.getElementById('ai-status').innerText = `AI: ${tf.getBackend()}, gpu load: ${load}%`
+        if (load <= 10) {
+            document.getElementById('ai-icon').className = 'ai-fast-speed'
+        }
+        if (load > 50) {
+            document.getElementById('ai-icon').className = 'ai-slow-speed'
+        }
         let guessList = []
         for (let i = 0; i < prediction.length; i++) {
             if (prediction[i] > 0.1 && birds[i].geoscore > 0.0) {
                 guessList.push(birds[i].name)
             }
         }
-        console.log('recogized:', guessList)
         guessList.forEach(birdDetected)
     }
     return audioContext
@@ -76,11 +85,11 @@ function RingBuffer(size) {
 
 async function initBirdPredictionModel() {
     async function getCoords() {
-        return new Promise(resolve => {
-            navigator.geolocation.getCurrentPosition(({ coords }) => resolve(coords), resolve, { enableHighAccuracy: false })
+        return new Promise((resolve, reject) => {
+            navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: false })
         })
     }
-    await tf.setBackend('webgl')
+    await tf.ready()
     const progress = document.querySelector('#loading-pane progress')
     const progressText = document.querySelector('#loading-pane span')
     progress.max = 100
@@ -99,22 +108,31 @@ async function initBirdPredictionModel() {
     addProgress(10)
     progressText.innerText = 'Loading birds aria model (7 Mb)...'
     const tfliteModel = await tflite.loadTFLiteModel('models/V2.4/BirdNET_GLOBAL_6K_V2.4_MData_Model_FP16.tflite')
-    addProgress(10)
-    progressText.innerText = 'Waiting geolocation to form birds list...'
-    const { latitude, longitude } = await getCoords()
-    addProgress(10)
-    progressText.innerText = 'Forming birds list by geolocation and date...'
-    const startOfYear = new Date(new Date().getFullYear(), 0, 1);
-    startOfYear.setDate(startOfYear.getDate() + (1 - (startOfYear.getDay() % 7)))
-    const week = Math.round((new Date() - startOfYear) / 604800000) + 1
-    const geoscores = await tfliteModel.predict(tf.tensor([[latitude, longitude, week]])).data()
-    addProgress(10)
+
+    let geoscores = null
+    try {
+        addProgress(10)
+        progressText.innerText = 'Waiting geolocation to form birds list...'
+        const { coords: { latitude, longitude } } = await getCoords()
+        addProgress(5)
+        console.log('latitude, longitude:', latitude, longitude)
+        progressText.innerText = 'Forming birds list by geolocation and date...'
+        const startOfYear = new Date(new Date().getFullYear(), 0, 1);
+        startOfYear.setDate(startOfYear.getDate() + (1 - (startOfYear.getDay() % 7)))
+        const week = Math.round((new Date() - startOfYear) / 604800000) + 1
+        geoscores = await tfliteModel.predict(tf.tensor([[latitude, longitude, week]])).data()
+        addProgress(5)
+    } catch(e) {
+        document.getElementById('geo-icon').className = 'geo-disabled'
+        document.getElementById('geo-status').innerText = e.message
+        addProgress(20)
+    }
     progressText.innerText = 'Loading english bird labels...'
     const birdsList = (await birdsListPromise).split('\n')
-    const birds = new Array(geoscores.length)
-    for (let i = 0; i < geoscores.length; i++) {
+    const birds = new Array(birdsList.length)
+    for (let i = 0; i < birds.length; i++) {
         birds[i] = {
-            geoscore: geoscores[i],
+            geoscore: geoscores?.[i],
             name: birdsList[i].split('_')[1]
         }
     }
@@ -126,6 +144,12 @@ async function initBirdPredictionModel() {
     tf.engine().startScope()
     await BirdNetJS.predict(tf.zeros([1, 144000]), { batchSize: 1 }).data()
     tf.engine().endScope()
+    addProgress(10)
+    progressText.innerText = 'BirdNET benchmark...'
+    tf.engine().startScope()
+    await BirdNetJS.predict(tf.zeros([1, 144000]), { batchSize: 1 }).data()
+    tf.engine().endScope()
+    document.getElementById('ai-status').innerText = `AI: ${tf.getBackend()}`
 
     return { birds, BirdNetJS }
 }
