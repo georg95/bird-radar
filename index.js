@@ -26,7 +26,6 @@
 })()
 
 async function listen({ birds, BirdNetJS }) {
-    // await new Promise(res => setTimeout(res, 1000))
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
     const audioContext = new AudioContext({ sampleRate: 48000 })
     await audioContext.audioWorklet.addModule('audio-recorder.js')
@@ -103,15 +102,14 @@ async function initBirdPredictionModel() {
         currentProgress += value
         progress.value = currentProgress
     }
-    const birdsListPromise = fetch('models/V2.4/labels/en_us.txt').then(r => r.text())
+    const birdsListPromise = fetch('https://georg95.github.io/birdnet-web/models/birdnet/labels/en_us.txt').then(r => r.text())
     let prevLoadProgess = 0
-    const loadModelPromise = tf.loadLayersModel('models/birdnet/model.json', {
-        weightPathPrefix: 'models/birdnet/',
+    const loadModelPromise = tf.loadLayersModel('https://georg95.github.io/birdnet-web/models/birdnet/model.json', {
         onProgress: (p) => { addProgress((p - prevLoadProgess) * 40); prevLoadProgess = p }
     })
     addProgress(10)
     progressText.innerText = 'Loading birds aria model (7 Mb)...'
-    const tfliteModel = await tflite.loadTFLiteModel('models/V2.4/BirdNET_GLOBAL_6K_V2.4_MData_Model_FP16.tflite')
+    const tfliteModel = await tflite.loadTFLiteModel('https://georg95.github.io/birdnet-web/models/birdnet/area-model.tflite')
 
     let geoscores = null
     try {
@@ -231,7 +229,6 @@ class MelSpecLayerSimple extends tf.layers.Layer {
                 spec = tf.reverse(spec, -1)
                 spec = tf.transpose(spec)
                 spec = spec.expandDims(-1)
-                // spec = spec.expandDims(0)
                 return spec;
             }))
         })
