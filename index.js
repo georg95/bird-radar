@@ -1,13 +1,18 @@
 
 
-(async function main() {
+async function main() {
     const { birds, BirdNetJS } = await initBirdPredictionModel()
 
     document.getElementById('loading-pane').style.display = 'none'
     document.getElementById('record-pane').style.display = 'flex'
 
     let audioContext = null
-    document.getElementById('record').onclick = async () => {
+    document.getElementById('record').onclick = () => onRecordButton().catch((err) => {
+        onError(err)
+        document.getElementById('record').className = 'start'
+        document.getElementById('record-icon').className = 'paused-icon'
+    })
+    async function onRecordButton() {
         if (!audioContext) {
             document.getElementById('record').className = ''
             document.getElementById('record-icon').className = 'waiting-icon'
@@ -15,6 +20,7 @@
             document.getElementById('record').className = 'stop'
             document.getElementById('record-icon').className = ''
             document.getElementById('record-status').innerText = 'Recording'
+            document.getElementById('error').innerText = ''
         } else {
             document.getElementById('record-icon').className = 'paused-icon'
             document.getElementById('record-status').innerText = 'Recording paused'
@@ -23,10 +29,19 @@
             audioContext = null
         }
     }
-})()
+}
+main().catch(onError)
+
+function onError(err) {
+    document.getElementById('error').innerText = err.message
+    document.getElementById('error').innerHTML += '<br /><br />'
+    document.getElementById('error').innerText += err.stack
+}
 
 async function listen({ birds, BirdNetJS }) {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true }).catch(e => {
+        throw new Error('Please enable microphone in site permissions')
+    })
     const audioContext = new AudioContext({ sampleRate: 48000 })
     await audioContext.audioWorklet.addModule('audio-recorder.js')
     const workletNode = new AudioWorkletNode(audioContext, 'audio-recorder')
@@ -35,7 +50,8 @@ async function listen({ birds, BirdNetJS }) {
     const gain = audioContext.createGain();
     gain.gain.value = 0; // mute output
     workletNode.connect(gain).connect(audioContext.destination);
-    workletNode.port.onmessage = async (event) => {
+    workletNode.port.onmessage = (event) => processAudioBatch(event).catch(onError)
+    async function processAudioBatch(event) {
         const chunk = new Float32Array(event.data)
         const start = Date.now()
         tf.engine().startScope()
