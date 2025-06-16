@@ -149,7 +149,7 @@ async function initBirdPredictionModel() {
     const birdsList = (await fetch('https://georg95.github.io/birdnet-web/models/birdnet/labels/en_us.txt').then(r => r.text())).split('\n')
     const supportedLanguages = ['af', 'da', 'en_us', 'fr', 'ja', 'no', 'ro', 'sl', 'tr', 'ar', 'de', 'es',
         'hu', 'ko', 'pl', 'ru', 'sv', 'uk', 'cs', 'en_uk', 'fi', 'it', 'nl', 'pt', 'sk', 'th', 'zh']
-    const lang = supportedLanguages.find(l => l.startsWith(navigator.language)) || 'en_us'
+    const lang = supportedLanguages.find(l => l.startsWith(navigator.language.split('-')[0])) || 'en_us'
     const birdsListI18n = (await fetch(`https://georg95.github.io/birdnet-web/models/birdnet/labels/${lang}.txt`).then(r => r.text())).split('\n')
 
     const birds = new Array(birdsList.length)
