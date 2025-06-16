@@ -35,10 +35,8 @@ async function listen({ birds, BirdNetJS }) {
     const gain = audioContext.createGain();
     gain.gain.value = 0; // mute output
     workletNode.connect(gain).connect(audioContext.destination);
-    let audioProcessed = 0
     workletNode.port.onmessage = async (event) => {
         const chunk = new Float32Array(event.data)
-        audioProcessed += 3000
         const start = Date.now()
         tf.engine().startScope()
         const prediction = await BirdNetJS.predict(tf.tensor([chunk])).data()
@@ -57,9 +55,12 @@ async function listen({ birds, BirdNetJS }) {
             if (birds[i].geoscore !== undefined) {
                 geoscore = birds[i].geoscore
             }
-            if (prediction[i] > 0.35 && geoscore > 0.1) {
-                guessList.push(birds[i].name)
+            if (prediction[i] > 0.35 && geoscore > 0.2) {
+                guessList.push({ ...birds[i], score: prediction[i] })
             }
+        }
+        if (guessList.length > 0) {
+            console.log('guessList:', guessList)
         }
         guessList.forEach(birdDetected)
     }
@@ -102,7 +103,6 @@ async function initBirdPredictionModel() {
         currentProgress += value
         progress.value = currentProgress
     }
-    const birdsListPromise = fetch('https://georg95.github.io/birdnet-web/models/birdnet/labels/en_us.txt').then(r => r.text())
     let prevLoadProgess = 0
     const loadModelPromise = tf.loadLayersModel('https://georg95.github.io/birdnet-web/models/birdnet/model.json', {
         onProgress: (p) => { addProgress((p - prevLoadProgess) * 40); prevLoadProgess = p }
@@ -129,13 +129,19 @@ async function initBirdPredictionModel() {
         document.getElementById('geo-status').innerText = e.message
         addProgress(20)
     }
-    progressText.innerText = 'Loading english bird labels...'
-    const birdsList = (await birdsListPromise).split('\n')
+    progressText.innerText = 'Loading bird labels...'
+    const birdsList = (await fetch('https://georg95.github.io/birdnet-web/models/birdnet/labels/en_us.txt').then(r => r.text())).split('\n')
+    const supportedLanguages = ['af', 'da', 'en_us', 'fr', 'ja', 'no', 'ro', 'sl', 'tr', 'ar', 'de', 'es',
+        'hu', 'ko', 'pl', 'ru', 'sv', 'uk', 'cs', 'en_uk', 'fi', 'it', 'nl', 'pt', 'sk', 'th', 'zh']
+    const lang = supportedLanguages.find(l => l.startsWith(navigator.language)) || 'en_us'
+    const birdsListI18n = (await fetch(`https://georg95.github.io/birdnet-web/models/birdnet/labels/${lang}.txt`).then(r => r.text())).split('\n')
+
     const birds = new Array(birdsList.length)
     for (let i = 0; i < birds.length; i++) {
         birds[i] = {
             geoscore: geoscores?.[i],
-            name: birdsList[i].split('_')[1]
+            name: birdsList[i].split('_')[1],
+            nameI18n: birdsListI18n[i].split('_')[1],
         }
     }
     addProgress(10)
@@ -157,10 +163,10 @@ async function initBirdPredictionModel() {
 }
 let birdsList = {}
 const birdsDetected = {}
-function birdDetected(bird) {
+function birdDetected({ name, nameI18n }) {
     const birdListNode = document.getElementById('birdlist')
     const firstBird = birdListNode.childNodes[0] || null
-    const existingBirdView = document.getElementById(bird) 
+    const existingBirdView = document.getElementById(name) 
     if (existingBirdView) {
         const birdCounter = existingBirdView.querySelector('.counter')
         birdCounter.innerText = (Number(birdCounter.innerText) + 1).toString()
@@ -169,15 +175,15 @@ function birdDetected(bird) {
     }
     const birdView = document.createElement('div')
     birdView.className = 'bird'
-    birdView.id = bird
+    birdView.id = name
     const birdImage = document.createElement('img')
-    birdImage.src = `birds/${bird[0]}/${bird}.jpg`
+    birdImage.src = `birds/${name[0]}/${name}.jpg`
     birdImage.onerror = () => { birdImage.src='birds/unknown.webp' }
     const birdCounter = document.createElement('div')
     birdCounter.className = 'counter'
     birdCounter.innerText = '1'
     const birdName = document.createElement('span')
-    birdName.innerText = bird
+    birdName.innerText = nameI18n
     birdView.appendChild(birdImage)
     birdView.appendChild(birdCounter)
     birdView.appendChild(birdName)
@@ -217,263 +223,198 @@ class MelSpecLayerSimple extends tf.layers.Layer {
         return tf.tidy(() => {
         inputs = inputs[0]
         return tf.stack(inputs.split(inputs.shape[0]).map((input) => {
-                let spec = input.squeeze()
-                spec = tf.sub(spec, tf.min(spec, -1, true))
-                spec = tf.div(spec, tf.max(spec, -1, true).add(0.000001))
-                spec = tf.sub(spec, 0.5)
-                spec = tf.mul(spec, 2.0)
-                spec = stft(spec, this.frameLength, this.frameStep, this.frameLength, tf.signal.hannWindow)
-                spec = tf.matMul(spec, this.melFilterbank)
-                spec = spec.pow(2.0)
-                spec = spec.pow(tf.div(1.0, tf.add(1.0, tf.exp(this.magScale.read()))))
-                spec = tf.reverse(spec, -1)
-                spec = tf.transpose(spec)
-                spec = spec.expandDims(-1)
-                return spec;
+            let spec = input.squeeze()
+            spec = tf.sub(spec, tf.min(spec, -1, true))
+            spec = tf.div(spec, tf.max(spec, -1, true).add(0.000001))
+            spec = tf.sub(spec, 0.5)
+            spec = tf.mul(spec, 2.0)
+            spec = tf.engine().runKernel('STFT', { signal: spec, frameLength: this.frameLength, frameStep: this.frameStep })
+            spec = tf.matMul(spec, this.melFilterbank)
+            spec = spec.pow(2.0)
+            spec = spec.pow(tf.div(1.0, tf.add(1.0, tf.exp(this.magScale.read()))))
+            spec = tf.reverse(spec, -1)
+            spec = tf.transpose(spec)
+            spec = spec.expandDims(-1)
+            return spec;
             }))
         })
     }
     static get className() { return 'MelSpecLayerSimple' }
 }
-function stft(signal, frameLength, frameStep, fftLength, windowFn) {
-    const framedSignal = tf.engine().runKernel('FRAME', {input: signal, frameLength, frameStep })
-    const input = tf.mul(framedSignal, windowFn(frameLength))
-    let innerDim = input.shape[input.shape.length - 1]
-    const batch = input.size / innerDim
-    const realValues = tf.engine().runKernel('FFT2', {input: tf.reshape(input, [batch, innerDim])})
-    const half = Math.floor(innerDim / 2) + 1
-    const realComplexConjugate = tf.split(
-        realValues, [half, innerDim - half],
-        realValues.shape.length - 1)
-    const outputShape = input.shape.slice()
-    outputShape[input.shape.length - 1] = half
-    return tf.reshape(realComplexConjugate[0], outputShape)
-}
 tf.serialization.registerClass(MelSpecLayerSimple)
+
 tf.registerKernel({
-    kernelName: 'FFT2',
+    kernelName: 'STFT',
     backendName: 'webgl',
-    kernelFunc: ({ backend, inputs: { input } }) => {
-        const innerDim = input.shape[input.shape.length - 1] / 2
-        const batch = tf.util.sizeFromShape(input.shape) / innerDim / 2
+    kernelFunc: ({ backend, inputs: { signal, frameLength, frameStep } }) => {
+        const innerDim = frameLength / 2
+        const batch = (signal.size - frameLength + frameStep) / frameStep | 0
         let currentTensor = backend.runWebGLProgram({
-            variableNames: ['mapvalue'],
-            outputShape: [batch, innerDim * 2],
+            variableNames: ['x'],
+            outputShape: [batch, frameLength],
             userCode: `
-void main() {
-  ivec2 coords = getOutputCoords();
-  int p = coords[1] % ${innerDim};
-  int k = 0;
-  for (int i = 0; i < ${Math.log2(innerDim)}; ++i) {
-    if ((p & (1 << i)) != 0) { k |= (1 << (${Math.log2(innerDim) - 1} - i)); }
-  }
-  if (coords[1] < ${innerDim}) {
-    setOutput(getMapvalue(coords[0], 2 * k));
-  } else {
-    setOutput(getMapvalue(coords[0], 2 * (k % ${innerDim}) + 1));
-  }
-}`
-        }, [input], 'float32')
+            void main() {
+                ivec2 coords = getOutputCoords();
+                int p = coords[1] % ${innerDim};
+                int k = 0;
+                for (int i = 0; i < ${Math.log2(innerDim)}; ++i) {
+                    if ((p & (1 << i)) != 0) { k |= (1 << (${Math.log2(innerDim) - 1} - i)); }
+                }
+                int i = 2 * k;
+                if (coords[1] >= ${innerDim}) {
+                    i = 2 * (k % ${innerDim}) + 1;
+                }
+                int q = coords[0] * ${frameLength} + i;
+                float val = getX((q / ${frameLength}) * ${frameStep} + q % ${frameLength});
+                float cosArg = ${2.0 * Math.PI / frameLength} * float(q);
+                float mul = 0.5 - 0.5 * cos(cosArg);
+                setOutput(val * mul);
+            }`
+        }, [signal], 'float32')
         for (let len = 1; len < innerDim; len *= 2) {
             let prevTensor = currentTensor
             currentTensor = backend.runWebGLProgram({
-                variableNames: [`x`],
+                variableNames: ['x'],
                 outputShape: [batch, innerDim * 2],
                 userCode: `void main() {
-ivec2 coords = getOutputCoords();
-int batch = coords[0];
-int i = coords[1];
-int k = i % ${innerDim};
-int isHigh = (k % ${len * 2}) / ${len};
-int highSign = (1 - isHigh * 2);
-int baseIndex = k - isHigh * ${len};
-float t = ${Math.PI / len} * float(k % ${len});
-float a = cos(t);
-float b = sin(-t);
-float oddK_re = getX(batch, baseIndex + ${len});
-float oddK_im = getX(batch, baseIndex + ${len + innerDim});
-if (i / ${innerDim} == 0) { // real
-    float evenK_re = getX(batch, baseIndex);
-    float outp = evenK_re + (oddK_re * a - oddK_im * b) * float(highSign);
-    setOutput(outp);
-} else { // imaginary
-    float evenK_im = getX(batch, baseIndex + ${innerDim});
-    float outp = evenK_im + (oddK_re * b + oddK_im * a) * float(highSign);
-    setOutput(outp);
-}
-}` }, [currentTensor], 'float32')
+                    ivec2 coords = getOutputCoords();
+                    int batch = coords[0];
+                    int i = coords[1];
+                    int k = i % ${innerDim};
+                    int isHigh = (k % ${len * 2}) / ${len};
+                    int highSign = (1 - isHigh * 2);
+                    int baseIndex = k - isHigh * ${len};
+                    float t = ${Math.PI / len} * float(k % ${len});
+                    float a = cos(t);
+                    float b = sin(-t);
+                    float oddK_re = getX(batch, baseIndex + ${len});
+                    float oddK_im = getX(batch, baseIndex + ${len + innerDim});
+                    if (i < ${innerDim}) { // real
+                        float evenK_re = getX(batch, baseIndex);
+                        setOutput(evenK_re + (oddK_re * a - oddK_im * b) * float(highSign));
+                    } else { // imaginary
+                        float evenK_im = getX(batch, baseIndex + ${innerDim});
+                        setOutput(evenK_im + (oddK_re * b + oddK_im * a) * float(highSign));
+                    }
+                }`
+            }, [currentTensor], 'float32')
             backend.disposeIntermediateTensorInfo(prevTensor)
         }
-
-        let prevTensor = currentTensor
-        currentTensor = backend.runWebGLProgram({
+        const real = backend.runWebGLProgram({
             variableNames: ['x'],
-            outputShape: [batch, innerDim * 2],
-            userCode: `
-void main() {
-    ivec2 coords = getOutputCoords();
-    int i = coords[1];
-    int batch = coords[0];
-
-    int k = i <= ${innerDim} ? i : ${innerDim * 2} - i;
-    int zI = k % ${innerDim};
-    int conjI = (${innerDim} - k) % ${innerDim};
-    float Zk0 = getX(batch, zI);
-    float Zk_conj0 = getX(batch, conjI);
-    float t = ${-2 * Math.PI} * float(k) / float(${innerDim * 2});
-    float result = (Zk0 + Zk_conj0 + cos(t) * (getX(batch, zI+${innerDim}) + getX(batch, conjI+${innerDim})) + sin(t) * (Zk0 - Zk_conj0)) * 0.5;
-    setOutput(result);
-}`
+            outputShape: [batch, innerDim + 1],
+            userCode: `void main() {
+                ivec2 coords = getOutputCoords();
+                int batch = coords[0];
+                int i = coords[1];
+                int zI = i % ${innerDim};
+                int conjI = (${innerDim} - i) % ${innerDim};
+                float Zk0 = getX(batch, zI);
+                float Zk1 = getX(batch, zI+${innerDim});
+                float Zk_conj0 = getX(batch, conjI);
+                float Zk_conj1 = -getX(batch, conjI+${innerDim});
+                float t = ${-2 * Math.PI} * float(i) / float(${innerDim * 2});
+                float diff0 = Zk0 - Zk_conj0;
+                float diff1 = Zk1 - Zk_conj1;
+                float result = (Zk0 + Zk_conj0 + cos(t) * diff1 + sin(t) * diff0) * 0.5;
+                setOutput(result);
+            }`
         }, [currentTensor], 'float32')
-        backend.disposeIntermediateTensorInfo(prevTensor)
-        return currentTensor
+        backend.disposeIntermediateTensorInfo(currentTensor)
+        return real
     }
 })
-tf.registerKernel({
-    kernelName: 'FRAME',
-    backendName: 'webgl',
-    kernelFunc: ({ backend, inputs: { input, frameLength, frameStep } }) => {
-        const outpLen = (input.size - frameLength + frameStep) / frameStep | 0
-        
-        return backend.runWebGLProgram({
-            variableNames: ['x'],
-            outputShape: [outpLen, frameLength],
-            userCode: `
-    void main() {
-    ivec2 coords = getOutputCoords();
-    int j = coords[1];
-    int b = coords[0];
-    int i = b * ${frameLength} + j;
-    setOutput(getX((i / ${frameLength}) * ${frameStep} + i % ${frameLength}));
-    }`
-        }, [input], 'float32')
-    }
-})
-function arrayProduct (arr) {
-    let product = 1;
-    for (let i = 0; i < arr.length; i++) { product *= arr[i] }
-    return product;
-}
-function flatDispatchLayout(shape) { return {x: shape.map((d, i) => i)} }
-function computeDispatch(layout, outputShape, workgroupSize = [1, 1, 1], elementsPerThread = [1, 1, 1]) {
-return [Math.ceil(arrayProduct(layout.x.map(d => outputShape[d])) /(workgroupSize[0] * elementsPerThread[0])),
-    layout.y ? Math.ceil(arrayProduct(layout.y.map(d => outputShape[d])) / (workgroupSize[1] * elementsPerThread[1])) : 1,
-    layout.z ? Math.ceil(arrayProduct(layout.z.map(d => outputShape[d])) / (workgroupSize[2] * elementsPerThread[2])) : 1]
-}
 
-if (!globalThis.tf) { globalThis.tf = {} }
-tf.registerKernel?.({
-    kernelName: 'FFT2',
+tf.registerKernel({
+    kernelName: 'STFT',
     backendName: 'webgpu',
-    kernelFunc: ({ backend, inputs: { input } }) => {
-        const innerDim = input.shape[input.shape.length - 1] / 2
-        const batch = tf.util.sizeFromShape(input.shape) / innerDim / 2
+    kernelFunc: ({ backend, inputs: { signal, frameLength, frameStep } }) => {
         const workgroupSize = [64, 1, 1]
-        const dispatchLayout = flatDispatchLayout([batch, innerDim * 2])
-        const dispatch = computeDispatch(dispatchLayout, [batch, innerDim * 2], workgroupSize, [2, 1, 1])
+        const innerDim = frameLength / 2
+        const batch = (signal.size - frameLength + frameStep) / frameStep | 0
         let currentTensor = backend.runWebGPUProgram({
-            variableNames: ['X'],
+            variableNames: ['x'],
+            workgroupSize: [64, 1, 1],
             outputShape: [batch, innerDim * 2],
-            workgroupSize,
-            shaderKey: `fft_permut_${innerDim}`,
-            dispatchLayout,
-            dispatch,
+            shaderKey: `fft_permut_${innerDim}_${frameStep}`,
+            dispatchLayout: { x: [0, 1] },
+            dispatch: [Math.ceil(batch * innerDim * 2 / workgroupSize[0]), 1, 1],
             getUserCode: () => `
-fn main(index: i32) {
-let batch = index / ${innerDim};
-let p = index % ${innerDim};
-let outIndexReal = batch * ${innerDim * 2} + p;
-let outIndexImag = outIndexReal + ${innerDim};
-var k = 0;
-for (var i: u32 = 0; i < ${Math.log2(innerDim)}; i = i + 1) {
-    if ((p & (1 << i)) != 0) { k |= (1 << (${Math.log2(innerDim) - 1} - i)); }
-}
-setOutputAtIndex(outIndexReal, getX(batch, 2 * k));
-setOutputAtIndex(outIndexImag, getX(batch, 2 * (k % ${innerDim}) + 1));
-}`
-        }, [input], 'float32')
+            fn main(index: i32) {
+                let batch = index / ${innerDim * 2};
+                let p = index % ${innerDim};
+                var k = 0;
+                for (var i: u32 = 0; i < ${Math.log2(innerDim)}; i = i + 1) {
+                    if ((p & (1 << i)) != 0) { k |= (1 << (${Math.log2(innerDim) - 1} - i)); }
+                }
+                var i = 2 * k;
+                if (index % ${innerDim * 2} >= ${innerDim}) {
+                    i = 2 * (k % ${innerDim}) + 1;
+                }
+                var q = batch * ${frameLength} + i;
+                var val = getX((q / ${frameLength}) * ${frameStep} + q % ${frameLength});
+                var cosArg = ${2.0 * Math.PI / frameLength} * f32(q);
+                var mul = 0.5 - 0.5 * cos(cosArg);
+                setOutputAtIndex(index, val * mul);
+            }`
+        }, [signal], 'float32')
         for (let len = 1; len < innerDim; len *= 2) {
             let prevTensor = currentTensor
             currentTensor = backend.runWebGPUProgram({
-                variableNames: [`value`],
-                outputShape: [batch, innerDim * 2],
+                variableNames: ['x'],
                 workgroupSize,
+                outputShape: [batch, innerDim * 2],
                 shaderKey: `fft_step_${innerDim}_${len}`,
-                dispatchLayout,
-                dispatch,
-                getUserCode: () => `fn main(index: i32) {
-                    let batch = index / ${innerDim};
-                    let i = index % ${innerDim};
-                    let outIndexReal = batch * ${innerDim * 2} + i;
-                    let outIndexImag = outIndexReal + ${innerDim};
-                    let k = i % ${innerDim};
-                    let isHigh = (k % (${len} * 2)) / ${len};
-                    let highSign = (1 - isHigh * 2);
-                    let baseIndex = k - isHigh * ${len};
-                    let t = ${Math.PI} / f32(${len}) * f32(k % ${len});
-                    let a = cos(t);
-                    let b = sin(-t);
-                    let oddK_re = getValue(batch, baseIndex + ${len});
-                    let oddK_im = getValue(batch, baseIndex + ${len} + ${innerDim});
-
-                    let evenK_re = getValue(batch, baseIndex);
-                    let outpR = (evenK_re + (oddK_re * a - oddK_im * b) * f32(highSign));
-                    setOutputAtIndex(outIndexReal, outpR);
-                    let evenK_im = getValue(batch, baseIndex + ${innerDim});
-                    let outpI = (evenK_im + (oddK_re * b + oddK_im * a) * f32(highSign));
-                    setOutputAtIndex(outIndexImag, outpI);
+                dispatchLayout: { x: [0, 1] },
+                dispatch: [Math.ceil(batch * innerDim / workgroupSize[0]), 1, 1],
+                getUserCode: () => {
+                    return `fn main(index: i32) {
+                        let batch = index / ${innerDim};
+                        var i = index % ${innerDim};
+                        let outIndexReal = batch * ${innerDim * 2} + i;
+                        let outIndexImag = outIndexReal + ${innerDim};
+                        let isHigh = (i % (${len} * 2)) / ${len};
+                        let highSign = (1 - isHigh * 2);
+                        let baseIndex = i - isHigh * ${len};
+                        let t = ${Math.PI / len} * f32(i % ${len});
+                        let a = cos(t);
+                        let b = sin(-t);
+                        let oddK_re = getX(batch, baseIndex + ${len});
+                        let oddK_im = getX(batch, baseIndex + ${len} + ${innerDim});
+                        let evenK_re = getX(batch, baseIndex);
+                        setOutputAtIndex(outIndexReal, (evenK_re + (oddK_re * a - oddK_im * b) * f32(highSign)));
+                        let evenK_im = getX(batch, baseIndex + ${innerDim});
+                        setOutputAtIndex(outIndexImag, (evenK_im + (oddK_re * b + oddK_im * a) * f32(highSign)));
                     }`
-                }, [currentTensor], 'float32')
+                }
+            }, [currentTensor], 'float32')
             backend.disposeData(prevTensor.dataId)
         }
-        let prevTensor = currentTensor
-        currentTensor = backend.runWebGPUProgram({
+        const real = backend.runWebGPUProgram({
             variableNames: ['x'],
-            outputShape: [batch, innerDim * 2],
             workgroupSize,
-            shaderKey: `fft_post_${innerDim}`,
-            dispatchLayout,
-            dispatch: computeDispatch(flatDispatchLayout([batch, innerDim * 2]), [batch, innerDim * 2], workgroupSize, [1, 1, 1]),
-            getUserCode: () => `
-fn main(index: i32) {
-    let coords = getOutputCoords();
-    let i = coords[1];
-    let batch = coords[0];
-    var k = i;
-    if (i > ${innerDim}) {
-      k = ${innerDim * 2} - i;
-    }
-    let zI = k % ${innerDim};
-    let conjI = (${innerDim} - k) % ${innerDim};
-    let Zk0 = getX(batch, zI);
-    let Zk_conj0 = getX(batch, conjI);
-    let t = ${-2 * Math.PI} * f32(k) / f32(${innerDim * 2});
-    let result = (Zk0 + Zk_conj0 + cos(t) * (getX(batch, zI+${innerDim}) + getX(batch, conjI+${innerDim})) + sin(t) * (Zk0 - Zk_conj0)) * 0.5;
-    setOutputAtIndex(index, result);
-}`
+            outputShape: [batch, innerDim + 1],
+            shaderKey: `rfft_reassemble_${innerDim}_real`,
+            dispatchLayout: { x: [0, 1] },
+            dispatch: [Math.ceil((batch * (innerDim + 1)) / workgroupSize[0]), 1, 1],
+            getUserCode: () => `fn main(index: i32) {
+                let batch = index / ${innerDim + 1};
+                let i = index % ${innerDim + 1};
+                let k = i;
+                let zI = k % ${innerDim};
+                let conjI = (${innerDim} - k) % ${innerDim};
+                let Zk0 = getX(batch, zI);
+                let Zk1 = getX(batch, zI+${innerDim});
+                let Zk_conj0 = getX(batch, conjI);
+                let Zk_conj1 = -getX(batch, conjI+${innerDim});
+                let t = ${-2 * Math.PI} * f32(k) / f32(${innerDim * 2});
+                let diff0 = Zk0 - Zk_conj0;
+                let diff1 = Zk1 - Zk_conj1;
+                let result = (Zk0 + Zk_conj0 + cos(t) * diff1 + sin(t) * diff0) * 0.5;
+                setOutputAtIndex(index, result);
+            }`
         }, [currentTensor], 'float32')
-        backend.disposeData(prevTensor.dataId)
-        return currentTensor
-    }
-})
-tf.registerKernel({
-    kernelName: 'FRAME',
-    backendName: 'webgpu',
-    kernelFunc: ({ backend, inputs: { input, frameLength, frameStep } }) => {
-        const workgroupSize = [64, 1, 1]
-        const outpLen = (input.size - frameLength + frameStep) / frameStep | 0
-        const dispatchLayout = flatDispatchLayout([outpLen, frameLength])
-        return backend.runWebGPUProgram({
-            variableNames: ['x'],
-            outputShape: [outpLen, frameLength],
-            workgroupSize,
-            shaderKey: `frame_${frameLength}_${frameStep}`,
-            dispatchLayout,
-            dispatch: computeDispatch(dispatchLayout, [outpLen, frameLength], workgroupSize),
-            getUserCode: () => `
-    fn main(i: i32) {
-        setOutputAtIndex(i, getX((i / ${frameLength}) * ${frameStep} + i % ${frameLength}));
-    }`
-        }, [input], 'float32')
+        backend.disposeData(currentTensor.dataId)
+        return real
     }
 })
