@@ -84,6 +84,7 @@
         }
         #error {
             color: rgb(224, 99, 99);
+            display: none;
         }
         #error {
             margin: 20px;
@@ -186,6 +187,17 @@
         .bird-details-confidence {
             margin-left: 10px;
         }
+        #view-filter {
+            padding: 0 20px;
+            display: none;
+            justify-content: end;
+        }
+        #switch-view {
+            width: 40px;
+            height: 40px;
+            font-size: 20;
+            background: none;
+        }
     </style>
 </head>
 <body>
@@ -223,6 +235,9 @@
         </div>
     </header>
     <div id="error"></div>
+    <div id="view-filter">
+        <button id="switch-view">📊</button>
+    </div>
     <div id="birdlist"></div>
 </body>
 </html>

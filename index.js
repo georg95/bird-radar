@@ -1,7 +1,6 @@
 async function main() {
     const { birds, BirdNetJS } = await initBirdPredictionModel()
     const db = await database()
-    displayBirdsStats(db)
     const devices = (await navigator.mediaDevices.enumerateDevices()).filter(({ kind }) => kind === 'audioinput')
     const audioSelect = document.querySelector('select')
     let selectedInput = (devices.find(d => d.deviceId === 'default') || devices[0]).deviceId
@@ -15,6 +14,26 @@ async function main() {
         }
     })
 
+    let currentView = 'list'
+    displayBirds()
+    document.getElementById('switch-view').onclick = () => {
+        currentView = currentView === 'list' ? 'stat' : 'list'
+        document.getElementById('switch-view').innerText = currentView === 'list' ? '📊' : '📜'
+        displayBirds()
+    }
+    async function displayBirds() {
+        document.getElementById('birdlist').innerHTML = ''
+        const birdList = await db.getLastBirdcalls()
+        if (birdList.length) {
+            document.getElementById('view-filter').style.display = 'flex'
+        }
+        birdList.reverse()
+        if (currentView === 'list') {
+            await displayBirdsCalls(birdList, db)
+        } else if (currentView === 'stat') {
+            await displayBirdsStats(birdList)
+        }
+    }
     document.getElementById('show-settings').onclick = () => {
         document.getElementById('settings-pane').style.display = 'flex'
         document.getElementById('record-pane').style.display = 'none'
@@ -89,8 +108,7 @@ async function main() {
 }
 main().catch(onError)
 
-async function displayBirdsStats(db) {
-    const birdList = await db.getLastBirdcalls()
+async function displayBirdsStats(birdList) {
     const birdsMap = {}
     for (let { name, nameI18n } of birdList) {
         if (!birdsMap[name]) {
@@ -104,6 +122,13 @@ async function displayBirdsStats(db) {
     }
     for (let name in birdsMap) {
         birdDetected(birdsMap[name])
+    }
+}
+
+async function displayBirdsCalls(birdList, db) {
+    for (let { name, nameI18n, score, audioId } of birdList) {
+        const audioSrc = URL.createObjectURL(await db.getAudio(audioId))
+        document.getElementById('birdlist').appendChild(birdCallItem({ name, nameI18n, score, audioSrc }))
     }
 }
 
@@ -132,14 +157,6 @@ function birdDetected({ name, nameI18n, count=1 }) {
     birdView.appendChild(birdCounter)
     birdView.appendChild(birdName)
     birdListNode.insertBefore(birdView, firstBird)
-}
-
-async function displayBirdsCalls(db) {
-    const birdList = await db.getLastBirdcalls()
-    for (let { name, nameI18n, score, audioId } of birdList) {
-        const audioSrc = URL.createObjectURL(await db.getAudio(audioId))
-        document.getElementById('birdlist').prepend(birdCallItem({ name, nameI18n, score, audioSrc }))
-    }
 }
 
 function birdCallItem({ name, nameI18n, score, audioSrc }) {
@@ -234,6 +251,7 @@ function onError(err) {
     document.getElementById('error').innerText = err.message
     document.getElementById('error').innerHTML += '<br /><br />'
     document.getElementById('error').innerText += err.stack
+    document.getElementById('error').style.display = 'block'
 }
 
 async function encodeAudio(float32Array, sampleRate=48000, bitrate) {
