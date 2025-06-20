@@ -1,6 +1,7 @@
 async function main() {
     const { birds, BirdNetJS } = await initBirdPredictionModel()
     const db = await database()
+    displayBirdsStats(db)
     const devices = (await navigator.mediaDevices.enumerateDevices()).filter(({ kind }) => kind === 'audioinput')
     const audioSelect = document.querySelector('select')
     let selectedInput = (devices.find(d => d.deviceId === 'default') || devices[0]).deviceId
@@ -88,6 +89,59 @@ async function main() {
 }
 main().catch(onError)
 
+async function displayBirdsStats(db) {
+    const birdList = await db.getLastBirdcalls()
+    const birdsMap = {}
+    for (let { name, nameI18n } of birdList) {
+        if (!birdsMap[name]) {
+            birdsMap[name] = {
+                name,
+                nameI18n,
+                count: 0,
+            }
+        }
+        birdsMap[name].count++
+    }
+    for (let name in birdsMap) {
+        birdDetected(birdsMap[name])
+    }
+}
+
+function birdDetected({ name, nameI18n, count=1 }) {
+    const birdListNode = document.getElementById('birdlist')
+    const firstBird = birdListNode.childNodes[0] || null
+    const existingBirdView = document.getElementById(name)
+    if (existingBirdView) {
+        const birdCounter = existingBirdView.querySelector('.counter')
+        birdCounter.innerText = (Number(birdCounter.innerText) + 1).toString()
+        birdListNode.insertBefore(existingBirdView, firstBird)
+        return
+    }
+    const birdView = document.createElement('div')
+    birdView.className = 'bird'
+    birdView.id = name
+    const birdImage = document.createElement('img')
+    birdImage.src = `birds/${name[0]}/${name}.jpg`
+    birdImage.onerror = () => { birdImage.src='birds/unknown.webp' }
+    const birdCounter = document.createElement('div')
+    birdCounter.className = 'counter'
+    birdCounter.innerText = count
+    const birdName = document.createElement('span')
+    birdName.innerText = nameI18n
+    birdView.appendChild(birdImage)
+    birdView.appendChild(birdCounter)
+    birdView.appendChild(birdName)
+    birdListNode.insertBefore(birdView, firstBird)
+}
+
+async function displayBirdsCalls(db) {
+    const birdList = await db.getLastBirdcalls()
+    for (let { name, nameI18n, score, audioId } of birdList) {
+        const audioSrc = URL.createObjectURL(await db.getAudio(audioId))
+        document.getElementById('birdlist').prepend(birdCallItem({ name, nameI18n, score, audioSrc }))
+    }
+}
+
 function birdCallItem({ name, nameI18n, score, audioSrc }) {
     const birdItem = document.createElement('div')
     birdItem.className = 'bird-call'
@@ -109,42 +163,17 @@ function birdCallItem({ name, nameI18n, score, audioSrc }) {
     title.innerText = nameI18n
 
     const confidence = document.createElement('span')
-    confidence.style.color = '#777'
+    confidence.className = 'bird-details-confidence'
+    confidence.style.color = '#900'
     if (score > 0.3) { confidence.style.color = '#FFFF55' }
     if (score > 0.6) { confidence.style.color = '#00FF55' }
     title.appendChild(confidence)
+    confidence.innerText = `score: ${score.toFixed(2)}`
     birdDetails.appendChild(title)
 
     birdItem.appendChild(birdImage)
     birdItem.appendChild(birdDetails)
     return birdItem
-}
-
-function birdDetected({ name, nameI18n }) {
-    const birdListNode = document.getElementById('birdlist')
-    const firstBird = birdListNode.childNodes[0] || null
-    const existingBirdView = document.getElementById(name)
-    if (existingBirdView) {
-        const birdCounter = existingBirdView.querySelector('.counter')
-        birdCounter.innerText = (Number(birdCounter.innerText) + 1).toString()
-        birdListNode.insertBefore(existingBirdView, firstBird)
-        return
-    }
-    const birdView = document.createElement('div')
-    birdView.className = 'bird'
-    birdView.id = name
-    const birdImage = document.createElement('img')
-    birdImage.src = `birds/${name[0]}/${name}.jpg`
-    birdImage.onerror = () => { birdImage.src='birds/unknown.webp' }
-    const birdCounter = document.createElement('div')
-    birdCounter.className = 'counter'
-    birdCounter.innerText = '1'
-    const birdName = document.createElement('span')
-    birdName.innerText = nameI18n
-    birdView.appendChild(birdImage)
-    birdView.appendChild(birdCounter)
-    birdView.appendChild(birdName)
-    birdListNode.insertBefore(birdView, firstBird)
 }
 
 async function database() {
@@ -166,9 +195,8 @@ async function database() {
             const time = Date.now()
             const audioId = await new Promise(resolve => {
                 const tx = db.transaction('audio', 'readwrite')
-                const objectStore = tx.objectStore('audio')
-                objectStore.add(encodedAudio)
-                tx.oncomplete = () => resolve(objectStore.result)
+                const audioPut = tx.objectStore('audio').add(encodedAudio)
+                tx.oncomplete = () => resolve(audioPut.result)
             })
             await new Promise(resolve => {
                 const tx = db.transaction('birds', 'readwrite')
