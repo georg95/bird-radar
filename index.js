@@ -1,22 +1,78 @@
-
-
 async function main() {
     const { birds, BirdNetJS } = await initBirdPredictionModel()
+    const db = await database()
+    const devices = (await navigator.mediaDevices.enumerateDevices()).filter(({ kind }) => kind === 'audioinput')
+    const audioSelect = document.querySelector('select')
+    let selectedInput = (devices.find(d => d.deviceId === 'default') || devices[0]).deviceId
+    devices.forEach(device => {
+        const option = document.createElement('option')
+        option.innerText = device.label
+        option.value = device.deviceId
+        audioSelect.appendChild(option)
+        audioSelect.onchange = () => {
+            selectedInput = audioSelect.value
+        }
+    })
 
+    document.getElementById('show-settings').onclick = () => {
+        document.getElementById('settings-pane').style.display = 'flex'
+        document.getElementById('record-pane').style.display = 'none'
+    }
+    document.getElementById('hide-settings').onclick = () => {
+        document.getElementById('settings-pane').style.display = 'none'
+        document.getElementById('record-pane').style.display = 'flex'
+    }
     document.getElementById('loading-pane').style.display = 'none'
     document.getElementById('record-pane').style.display = 'flex'
-
-    let audioContext = null
     document.getElementById('record').onclick = () => onRecordButton().catch((err) => {
         onError(err)
         document.getElementById('record').className = 'start'
         document.getElementById('record-icon').className = 'paused-icon'
     })
+
+    async function processAudioBatch(event) {
+        const pcmAudio = new Float32Array(event.data)
+        const start = Date.now()
+        tf.engine().startScope()
+        const prediction = await BirdNetJS.predict(tf.tensor([pcmAudio])).data()
+        tf.engine().endScope()
+        const load = Math.round((Date.now() - start) / 30)
+        document.getElementById('ai-status').innerText = `AI: ${tf.getBackend()}, gpu load: ${load}%`
+        if (load <= 10) {
+            document.getElementById('ai-icon').className = 'ai-fast-speed'
+        }
+        if (load > 50) {
+            document.getElementById('ai-icon').className = 'ai-slow-speed'
+        }
+        let guessList = []
+        const MIN_SCORE = 0.1
+        const MIN_GEO_SCORE = 0.05
+        for (let i = 0; i < prediction.length; i++) {
+            let geoscore = 1
+            if (birds[i].geoscore !== undefined) {
+                geoscore = birds[i].geoscore
+            }
+            if (prediction[i] > MIN_SCORE && geoscore > MIN_GEO_SCORE) {
+                guessList.push({ ...birds[i], score: prediction[i] })
+            }
+        }
+        if (guessList.length > 0) {
+            console.log('guessList:', guessList)
+            const encodedAudio = await encodeAudio(pcmAudio, 48000, 128000)
+            const audioSrc = URL.createObjectURL(encodedAudio)
+            guessList.forEach(({ name, nameI18n, score }) => {
+                document.getElementById('birdlist').prepend(birdCallItem({ name, nameI18n, score, audioSrc }))
+            })
+            await db.putBirdCalls(guessList, encodedAudio)
+        }
+    }
+
+    let audioContext = null
     async function onRecordButton() {
         if (!audioContext) {
             document.getElementById('record').className = ''
             document.getElementById('record-icon').className = 'waiting-icon'
-            audioContext = await listen({ birds, BirdNetJS })
+            audioContext = await listen({ processAudioBatch, selectedInput })
             document.getElementById('record').className = 'stop'
             document.getElementById('record-icon').className = ''
             document.getElementById('record-status').innerText = 'Recording'
@@ -32,54 +88,194 @@ async function main() {
 }
 main().catch(onError)
 
+function birdCallItem({ name, nameI18n, score, audioSrc }) {
+    const birdItem = document.createElement('div')
+    birdItem.className = 'bird-call'
+    const birdImage = document.createElement('img')
+    birdImage.src = `birds/${name[0]}/${name}.jpg`
+    birdImage.onerror = () => { birdImage.src='birds/unknown.webp' }
+    birdImage.title = nameI18n
+
+    const birdDetails = document.createElement('div')
+    birdDetails.className = 'bird-details'
+
+    const audio = document.createElement('audio')
+    audio.controls = true
+    audio.src = audioSrc
+    birdDetails.appendChild(audio)
+
+    const title = document.createElement('span')
+    title.className = 'bird-details-title'
+    title.innerText = nameI18n
+
+    const confidence = document.createElement('span')
+    confidence.style.color = '#777'
+    if (score > 0.3) { confidence.style.color = '#FFFF55' }
+    if (score > 0.6) { confidence.style.color = '#00FF55' }
+    title.appendChild(confidence)
+    birdDetails.appendChild(title)
+
+    birdItem.appendChild(birdImage)
+    birdItem.appendChild(birdDetails)
+    return birdItem
+}
+
+function birdDetected({ name, nameI18n }) {
+    const birdListNode = document.getElementById('birdlist')
+    const firstBird = birdListNode.childNodes[0] || null
+    const existingBirdView = document.getElementById(name)
+    if (existingBirdView) {
+        const birdCounter = existingBirdView.querySelector('.counter')
+        birdCounter.innerText = (Number(birdCounter.innerText) + 1).toString()
+        birdListNode.insertBefore(existingBirdView, firstBird)
+        return
+    }
+    const birdView = document.createElement('div')
+    birdView.className = 'bird'
+    birdView.id = name
+    const birdImage = document.createElement('img')
+    birdImage.src = `birds/${name[0]}/${name}.jpg`
+    birdImage.onerror = () => { birdImage.src='birds/unknown.webp' }
+    const birdCounter = document.createElement('div')
+    birdCounter.className = 'counter'
+    birdCounter.innerText = '1'
+    const birdName = document.createElement('span')
+    birdName.innerText = nameI18n
+    birdView.appendChild(birdImage)
+    birdView.appendChild(birdCounter)
+    birdView.appendChild(birdName)
+    birdListNode.insertBefore(birdView, firstBird)
+}
+
+async function database() {
+    const db = await new Promise((resolve, reject) => {
+        const request = indexedDB.open('Birdcalls')
+        request.onerror = () => reject('Cant save birds calls in IndexedDB')
+        request.onsuccess = (event) => resolve(event.target.result)
+        request.onupgradeneeded = (event) => {
+            const db = event.target.result
+            const objectStore = db.createObjectStore('birds', { autoIncrement: true })
+            objectStore.createIndex('name', 'name', { unique: false })
+            objectStore.createIndex('time', 'time', { unique: false })
+            db.createObjectStore('audio', { autoIncrement: true })
+        }
+    })
+
+    return {
+        async putBirdCalls(guessList, encodedAudio) {
+            const time = Date.now()
+            const audioId = await new Promise(resolve => {
+                const tx = db.transaction('audio', 'readwrite')
+                const objectStore = tx.objectStore('audio')
+                objectStore.add(encodedAudio)
+                tx.oncomplete = () => resolve(objectStore.result)
+            })
+            await new Promise(resolve => {
+                const tx = db.transaction('birds', 'readwrite')
+                const objectStore = tx.objectStore('birds')
+                guessList.forEach(bird => {
+                    objectStore.add({ ...bird, time, audioId })
+                })
+                tx.oncomplete = () => resolve()
+            })
+        },
+        async getLastBirdcalls() {
+            return new Promise(resolve => {
+                const tx = db.transaction('birds', 'readonly')
+                const objectStore = tx.objectStore('birds')
+                const request = objectStore.getAll() // TODO filter by last 24 hours
+                request.onsuccess = (event) => {
+                    resolve(event.target.result)
+                }
+            })
+        },
+        async getAudio(id) {
+            return new Promise(resolve => {
+                const tx = db.transaction('audio', 'readonly')
+                const objectStore = tx.objectStore('audio')
+                const request = objectStore.get(id)
+                request.onsuccess = (event) => {
+                    resolve(event.target.result)
+                }
+            })
+        }
+    }
+}
+
 function onError(err) {
     document.getElementById('error').innerText = err.message
     document.getElementById('error').innerHTML += '<br /><br />'
     document.getElementById('error').innerText += err.stack
 }
 
-async function listen({ birds, BirdNetJS }) {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true }).catch(e => {
-        throw new Error('Please enable microphone in site permissions')
+async function encodeAudio(float32Array, sampleRate=48000, bitrate) {
+    const codecs = [
+        'audio/ogg; codecs=opus',
+        'audio/mp4; codecs=opus',
+        'audio/ogg',
+        'audio/mp4',
+    ]
+    const codec = codecs.find(codec => MediaRecorder.isTypeSupported(codec))
+    if (!codec) {
+        console.warn('codecs', codecs, 'not supported')
+        return
+    }
+    const audioContext = new AudioContext({ sampleRate })
+    const buffer = audioContext.createBuffer(1, float32Array.length, sampleRate)
+    buffer.getChannelData(0).set(float32Array)
+    const source = audioContext.createBufferSource()
+    source.buffer = buffer
+    const destination = source.connect(audioContext.createMediaStreamDestination())
+    const recorder = new MediaRecorder(destination.stream, {
+        mimeType: codec,
+        audioBitsPerSecond: bitrate,
     })
+
+    recorder.start()
+    source.start()
+    return new Promise(async (resolve) => {
+        const recordedChunks = []
+        recorder.ondataavailable = async (e) => {
+            if (e.data.size > 0) { recordedChunks.push(e.data) }
+            if (recorder.state === 'inactive') {
+                resolve(new Blob(recordedChunks, { type: codec }))
+            }
+        }
+        await new Promise(resolve => source.onended = resolve)
+        setTimeout(() => recorder.stop(), 100)
+    })
+}
+
+async function listen({ processAudioBatch, selectedInput }) {
     const audioContext = new AudioContext({ sampleRate: 48000 })
+    if (audioContext.sampleRate !== 48000) {
+        throw new Error('Couldn\'t change sample rate to 48khz')
+    }
     await audioContext.audioWorklet.addModule('audio-recorder.js')
     const workletNode = new AudioWorkletNode(audioContext, 'audio-recorder')
-    const source = audioContext.createMediaStreamSource(stream);
-    source.connect(workletNode)
-    const gain = audioContext.createGain();
-    gain.gain.value = 0; // mute output
-    workletNode.connect(gain).connect(audioContext.destination);
+    const setGain = audioContext.createGain(); setGain.gain.value = 1.0
+    const zeroGain = audioContext.createGain(); zeroGain.gain.value = 0
+    // const highpassFilter = audioContext.createBiquadFilter();
+    // highpassFilter.type = "highpass";
+    // highpassFilter.frequency.value = 100;
+
+    // Audio graph
+    audioContext.createMediaStreamSource(await navigator.mediaDevices.getUserMedia({
+            audio: {
+                deviceId: selectedInput,
+                echoCancellation: false,
+                noiseSuppression: false,
+                autoGainControl: false,
+                channelCount: 1,
+            }
+        }).catch(e => { throw new Error('Please enable microphone in site permissions') }))
+        .connect(setGain)
+        // .connect(highpassFilter)
+        .connect(workletNode)
+        .connect(zeroGain)
+        .connect(audioContext.destination) // some browsers optimize away graph with no destination
+
     workletNode.port.onmessage = (event) => processAudioBatch(event).catch(onError)
-    async function processAudioBatch(event) {
-        const chunk = new Float32Array(event.data)
-        const start = Date.now()
-        tf.engine().startScope()
-        const prediction = await BirdNetJS.predict(tf.tensor([chunk])).data()
-        tf.engine().endScope()
-        const load = Math.round((Date.now() - start) / 30)
-        document.getElementById('ai-status').innerText = `AI: ${tf.getBackend()}, gpu load: ${load}%`
-        if (load <= 10) {
-            document.getElementById('ai-icon').className = 'ai-fast-speed'
-        }
-        if (load > 50) {
-            document.getElementById('ai-icon').className = 'ai-slow-speed'
-        }
-        let guessList = []
-        for (let i = 0; i < prediction.length; i++) {
-            let geoscore = 1
-            if (birds[i].geoscore !== undefined) {
-                geoscore = birds[i].geoscore
-            }
-            if (prediction[i] > 0.35 && geoscore > 0.2) {
-                guessList.push({ ...birds[i], score: prediction[i] })
-            }
-        }
-        if (guessList.length > 0) {
-            console.log('guessList:', guessList)
-        }
-        guessList.forEach(birdDetected)
-    }
     return audioContext
 }
 function RingBuffer(size) {
@@ -120,12 +316,12 @@ async function initBirdPredictionModel() {
         progress.value = currentProgress
     }
     let prevLoadProgess = 0
-    const loadModelPromise = tf.loadLayersModel('https://georg95.github.io/birdnet-web/models/birdnet/model.json', {
+    const loadModelPromise = tf.loadLayersModel('/birdnet-web/models/birdnet/model.json', {
         onProgress: (p) => { addProgress((p - prevLoadProgess) * 40); prevLoadProgess = p }
     })
     addProgress(10)
     progressText.innerText = 'Loading birds aria model (7 Mb)...'
-    const tfliteModel = await tflite.loadTFLiteModel('https://georg95.github.io/birdnet-web/models/birdnet/area-model.tflite')
+    const tfliteModel = await tflite.loadTFLiteModel('/birdnet-web/models/birdnet/area-model.tflite')
 
     let geoscores = null
     try {
@@ -176,42 +372,6 @@ async function initBirdPredictionModel() {
     document.getElementById('ai-status').innerText = `AI: ${tf.getBackend()}`
 
     return { birds, BirdNetJS }
-}
-let birdsList = {}
-const birdsDetected = {}
-function birdDetected({ name, nameI18n }) {
-    const birdListNode = document.getElementById('birdlist')
-    const firstBird = birdListNode.childNodes[0] || null
-    const existingBirdView = document.getElementById(name) 
-    if (existingBirdView) {
-        const birdCounter = existingBirdView.querySelector('.counter')
-        birdCounter.innerText = (Number(birdCounter.innerText) + 1).toString()
-        birdListNode.insertBefore(existingBirdView, firstBird)
-        return
-    }
-    const birdView = document.createElement('div')
-    birdView.className = 'bird'
-    birdView.id = name
-    const birdImage = document.createElement('img')
-    birdImage.src = `birds/${name[0]}/${name}.jpg`
-    birdImage.onerror = () => { birdImage.src='birds/unknown.webp' }
-    const birdCounter = document.createElement('div')
-    birdCounter.className = 'counter'
-    birdCounter.innerText = '1'
-    const birdName = document.createElement('span')
-    birdName.innerText = nameI18n
-    birdView.appendChild(birdImage)
-    birdView.appendChild(birdCounter)
-    birdView.appendChild(birdName)
-    birdListNode.insertBefore(birdView, firstBird)
-}
-
-async function testBirdsUI() {
-    const birdsTestList = ['notfound', 'Cyanistes caeruleus', 'Parus major', 'Pica pica', 'Passer domesticus', 'Passer montanus']
-    for (let i = 0; i < 12; i++) {
-        await new Promise(res => setTimeout(res, 1000))
-        birdDetected(birdsTestList[Math.random() * birdsTestList.length | 0])
-    }
 }
 
 class MelSpecLayerSimple extends tf.layers.Layer {
