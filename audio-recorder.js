@@ -2,7 +2,7 @@ class RecorderProcessor extends AudioWorkletProcessor {
     constructor() {
       super();
       this._buffer = [];
-      this._bufferSize = 144000; // 3 seconds at 48kHz
+      this._bufferSize = 512 + 128 * 511; // 3 seconds at 22kHz
     }
   
     process(inputs) {
