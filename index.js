@@ -1,86 +1,28 @@
-async function main() {
-    const BirdNetJS = await initBirdPredictionModel()
-    const db = await database()
-    const devices = (await navigator.mediaDevices.enumerateDevices()).filter(({ kind }) => kind === 'audioinput')
-    const audioSelect = document.querySelector('select')
-    let selectedInput = (devices.find(d => d.deviceId === 'default') || devices[0]).deviceId
-    devices.forEach(device => {
-        const option = document.createElement('option')
-        option.innerText = device.label
-        option.value = device.deviceId
-        audioSelect.appendChild(option)
-        audioSelect.onchange = () => {
-            selectedInput = audioSelect.value
-        }
-    })
+main().catch(showError)
 
-    let currentView = 'list'
-    displayBirds()
-    document.getElementById('switch-view').onclick = () => {
-        currentView = currentView === 'list' ? 'stat' : 'list'
-        document.getElementById('switch-view').innerText = currentView === 'list' ? '📊' : '📜'
-        displayBirds()
-    }
-    async function displayBirds() {
-        document.getElementById('birdlist').innerHTML = ''
-        const birdList = await db.getLastBirdcalls()
-        if (birdList.length) {
-            document.getElementById('view-filter').style.display = 'flex'
-        }
-        birdList.reverse()
-        if (currentView === 'list') {
-            await displayBirdsCalls(birdList, db)
-        } else if (currentView === 'stat') {
-            await displayBirdsStats(birdList)
-        }
-    }
-    document.getElementById('show-settings').onclick = () => {
-        document.getElementById('settings-pane').style.display = 'flex'
-        document.getElementById('record-pane').style.display = 'none'
-    }
-    document.getElementById('hide-settings').onclick = () => {
-        document.getElementById('settings-pane').style.display = 'none'
-        document.getElementById('record-pane').style.display = 'flex'
+async function main() {
+    const BirdNetJS = await loadingScreen()
+    const state = {
+        db: await database(),
+        currentView: 'list',
+        settings: {}
     }
     document.getElementById('loading-pane').style.display = 'none'
     document.getElementById('record-pane').style.display = 'flex'
     document.getElementById('record').onclick = () => onRecordButton().catch((err) => {
-        onError(err)
+        showError(err)
         document.getElementById('record').className = 'start'
         document.getElementById('record-icon').className = 'paused-icon'
     })
-
-    async function processAudioBatch(event) {
-        const pcmAudio = new Float32Array(event.data)
-        const start = Date.now()
-        tf.engine().startScope()
-        const { prediction } = await BirdNetJS({ message: 'predict', pcmAudio })
-        console.log('prediction:', prediction)
-        tf.engine().endScope()
-        const load = Math.round((Date.now() - start) / 30)
-        document.getElementById('ai-status').innerText = `GPU load: ${load}%`
-        if (load <= 10) {
-            document.getElementById('ai-icon').className = 'ai-fast-speed'
-        }
-        if (load > 50) {
-            document.getElementById('ai-icon').className = 'ai-slow-speed'
-        }
-        if (prediction.length > 0) {
-            const encodedAudio = await encodeAudio(pcmAudio, 22050, 64000)
-            const audioSrc = URL.createObjectURL(encodedAudio)
-            prediction.forEach((bird) => {
-                document.getElementById('birdlist').prepend(birdCallItem({ ...bird, audioSrc }))
-            })
-            await db.putBirdCalls(prediction, encodedAudio)
-        }
-    }
+    prepareUI(state)
+    await prepareSettings(state)
 
     let audioContext = null
     async function onRecordButton() {
         if (!audioContext) {
             document.getElementById('record').className = ''
             document.getElementById('record-icon').className = 'waiting-icon'
-            audioContext = await listen({ processAudioBatch, selectedInput })
+            audioContext = await listen()
             document.getElementById('record').className = 'stop'
             document.getElementById('record-icon').className = ''
             document.getElementById('record-status').innerText = 'Recording'
@@ -93,8 +35,160 @@ async function main() {
             audioContext = null
         }
     }
+    async function listen() {
+        const audioContext = new AudioContext({ sampleRate: 22050 })
+        if (audioContext.sampleRate !== 22050) {
+            throw new Error('Couldn\'t change sample rate to 22khz')
+        }
+        await audioContext.audioWorklet.addModule('audio-recorder.js')
+        const workletNode = new AudioWorkletNode(audioContext, 'audio-recorder')
+        const setGain = audioContext.createGain(); setGain.gain.value = 1.0
+        const zeroGain = audioContext.createGain(); zeroGain.gain.value = 0
+        // Audio graph
+        audioContext.createMediaStreamSource(await navigator.mediaDevices.getUserMedia({
+                audio: {
+                    deviceId: state.settings.selectedInput,
+                    echoCancellation: false,
+                    noiseSuppression: false,
+                    autoGainControl: false,
+                    channelCount: 1,
+                }
+            }).catch(e => { throw new Error('Please enable microphone in site permissions') }))
+            .connect(setGain)
+            .connect(workletNode)
+            .connect(zeroGain)
+            .connect(audioContext.destination) // some browsers optimize away graph with no destination
+
+        workletNode.port.onmessage = (event) => processAudioBatch(event).catch(showError)
+        return audioContext
+    }
+    async function processAudioBatch(event) {
+        const pcmAudio = new Float32Array(event.data)
+        const start = Date.now()
+        const { prediction } = await BirdNetJS({ message: 'predict', pcmAudio })
+        const load = Math.round((Date.now() - start) / 30)
+        document.getElementById('ai-status').innerText = `GPU load: ${load}%, RAM: ${performance.memory.usedJSHeapSize/performance.memory.jsHeapSizeLimit * 100 | 0}%`
+        if (load <= 10) {
+            document.getElementById('ai-icon').className = 'ai-fast-speed'
+        }
+        if (load > 50) {
+            document.getElementById('ai-icon').className = 'ai-slow-speed'
+        }
+        if (prediction.length > 0) {
+            const encodedAudio = await encodeAudio(pcmAudio, 22050, 64000)
+            const audioSrc = URL.createObjectURL(encodedAudio)
+            prediction.forEach((bird) => {
+                document.getElementById('view-filter').style.display = 'flex'
+                if (state.currentView === 'list') {
+                    document.getElementById('birdlist').prepend(birdCallItem({ ...bird, audioSrc }))
+                } else {
+                    addBirdToStatsScreen({ ...bird, count: 1 })
+                }
+            })
+            await state.db.putBirdCalls(prediction, encodedAudio)
+        }
+    }
 }
-main().catch(onError)
+
+async function loadingScreen() {
+    const BirdNetWorker = new Worker(`/birdnet-web/birdnet2.js?lang=${navigator.language}`)
+    async function BirdNetJS(data) {
+        BirdNetWorker.postMessage(data)
+        return new Promise(resolve => {
+            function onMessage({ data: dataRes }) {
+                if (dataRes.message === data.message) {
+                    BirdNetWorker.removeEventListener('message', onMessage)
+                    resolve(dataRes)
+                }
+            }
+            BirdNetWorker.addEventListener('message', onMessage)
+        })
+    }
+
+    const geolocation = new Promise((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: false })
+    })
+    await new Promise((resolve) => {
+        function onLoadingMessage({ data }) {
+            if (data.progress) {
+                document.querySelector('#loading-pane progress').value = data.progress
+            }
+            if (data.message === 'load_model') {
+                document.getElementById('progress_text').innerText = 'Loading BirdNET model...'
+            }
+            if (data.message === 'warmup') {
+                document.getElementById('progress_text').innerText = 'BirdNET warmup run...'
+            }
+            if (data.message === 'load_labels') {
+                document.getElementById('progress_text').innerText = 'Loading bird labels...'
+            }
+            if (data.message === 'load_geomodel') {
+                document.getElementById('progress_text').innerText = 'Loading geolocation model...'
+            }
+            if (data.message === 'loaded') {
+                BirdNetWorker.removeEventListener('message', onLoadingMessage)
+                resolve()
+            }
+        }
+        BirdNetWorker.addEventListener('message', onLoadingMessage)
+    })
+
+    document.getElementById('progress_text').innerText = 'Waiting geolocation...'
+    const { coords: { latitude, longitude } } = await geolocation
+    document.getElementById('progress_text').innerText = 'Inference area model...'
+    await BirdNetJS({ message: 'area-scores', latitude, longitude })
+    document.getElementById('progress_text').innerText = 'Preparing...'
+    return BirdNetJS
+}
+
+function prepareUI(state) {
+    navigator.wakeLock?.request('screen').catch(showError)
+    displayBirds()
+    async function displayBirds() {
+        document.getElementById('birdlist').innerHTML = ''
+        const birdList = await state.db.getLastBirdcalls()
+        if (birdList.length) {
+            document.getElementById('view-filter').style.display = 'flex'
+        }
+        birdList.reverse()
+        if (state.currentView === 'list') {
+            await displayBirdsCalls(birdList, state.db)
+        } else if (state.currentView === 'stat') {
+            await displayBirdsStats(birdList)
+        }
+    }
+    document.getElementById('switch-view').onclick = () => {
+        state.currentView = state.currentView === 'list' ? 'stat' : 'list'
+        document.getElementById('switch-view').innerText = state.currentView === 'list' ? '📊' : '📜'
+        displayBirds()
+    }
+    document.getElementById('show-settings').onclick = () => {
+        document.getElementById('settings-pane').style.display = 'flex'
+        document.getElementById('record-pane').style.display = 'none'
+    }
+    document.getElementById('hide-settings').onclick = () => {
+        document.getElementById('settings-pane').style.display = 'none'
+        document.getElementById('record-pane').style.display = 'flex'
+    }
+}
+
+async function prepareSettings(state) {
+    const devices = (await navigator.mediaDevices.enumerateDevices()).filter(({ kind }) => kind === 'audioinput')
+    const audioSelect = document.querySelector('select')
+    devices.forEach(device => {
+        const option = document.createElement('option')
+        option.innerText = device.label
+        option.value = device.deviceId
+        if (device.deviceId === 'default') {
+            option.selected = true
+        }
+        audioSelect.appendChild(option)
+        audioSelect.onchange = () => {
+            state.settings.selectedInput = audioSelect.value
+        }
+    })
+    state.settings.selectedInput = (devices.find(d => d.deviceId === 'default') || devices[0]).deviceId
+}
 
 async function displayBirdsStats(birdList) {
     const birdsMap = {}
@@ -109,7 +203,7 @@ async function displayBirdsStats(birdList) {
         birdsMap[name].count++
     }
     for (let name in birdsMap) {
-        birdDetected(birdsMap[name])
+        addBirdToStatsScreen(birdsMap[name])
     }
 }
 
@@ -120,13 +214,13 @@ async function displayBirdsCalls(birdList, db) {
     }
 }
 
-function birdDetected({ name, nameI18n, count=1 }) {
+function addBirdToStatsScreen({ name, nameI18n, count=1 }) {
     const birdListNode = document.getElementById('birdlist')
     const firstBird = birdListNode.childNodes[0] || null
     const existingBirdView = document.getElementById(name)
     if (existingBirdView) {
         const birdCounter = existingBirdView.querySelector('.counter')
-        birdCounter.innerText = (Number(birdCounter.innerText) + 1).toString()
+        birdCounter.innerText = (Number(birdCounter.innerText) + count).toString()
         birdListNode.insertBefore(existingBirdView, firstBird)
         return
     }
@@ -235,24 +329,18 @@ async function database() {
     }
 }
 
-function onError(err) {
-    document.getElementById('error').innerText = err.message
-    document.getElementById('error').innerHTML += '<br /><br />'
-    document.getElementById('error').innerText += err.stack
-    document.getElementById('error').style.display = 'block'
-}
-
 async function encodeAudio(float32Array, sampleRate, bitrate) {
     const codecs = [
         'audio/ogg; codecs=opus',
         'audio/mp4; codecs=opus',
         'audio/ogg',
         'audio/mp4',
+        'audio/webm; codecs=opus', // time seeker will glitch in webm blobs audio
+        'audio/webm',
     ]
     const codec = codecs.find(codec => MediaRecorder.isTypeSupported(codec))
     if (!codec) {
-        console.warn('codecs', codecs, 'not supported')
-        return
+        throw new Error(`codecs ${codecs.join(' or ')} not supported`)
     }
     const audioContext = new AudioContext({ sampleRate })
     const buffer = audioContext.createBuffer(1, float32Array.length, sampleRate)
@@ -280,38 +368,6 @@ async function encodeAudio(float32Array, sampleRate, bitrate) {
     })
 }
 
-async function listen({ processAudioBatch, selectedInput }) {
-    const audioContext = new AudioContext({ sampleRate: 22050 })
-    if (audioContext.sampleRate !== 22050) {
-        throw new Error('Couldn\'t change sample rate to 22khz')
-    }
-    await audioContext.audioWorklet.addModule('audio-recorder.js')
-    const workletNode = new AudioWorkletNode(audioContext, 'audio-recorder')
-    const setGain = audioContext.createGain(); setGain.gain.value = 1.0
-    const zeroGain = audioContext.createGain(); zeroGain.gain.value = 0
-    // const highpassFilter = audioContext.createBiquadFilter();
-    // highpassFilter.type = "highpass";
-    // highpassFilter.frequency.value = 100;
-
-    // Audio graph
-    audioContext.createMediaStreamSource(await navigator.mediaDevices.getUserMedia({
-            audio: {
-                deviceId: selectedInput,
-                echoCancellation: false,
-                noiseSuppression: false,
-                autoGainControl: false,
-                channelCount: 1,
-            }
-        }).catch(e => { throw new Error('Please enable microphone in site permissions') }))
-        .connect(setGain)
-        // .connect(highpassFilter)
-        .connect(workletNode)
-        .connect(zeroGain)
-        .connect(audioContext.destination) // some browsers optimize away graph with no destination
-
-    workletNode.port.onmessage = (event) => processAudioBatch(event).catch(onError)
-    return audioContext
-}
 function RingBuffer(size) {
     const buf = new Float32Array(size)
     let seeker = 0
@@ -333,50 +389,9 @@ function RingBuffer(size) {
     }
 }
 
-async function initBirdPredictionModel() {
-    const BirdNetWorker = new Worker(`/birdnet-web/birdnet2.js?lang=${navigator.language}`)
-    async function BirdNetJS(data) {
-        BirdNetWorker.postMessage(data)
-        return new Promise(resolve => {
-            function onMessage({ data: dataRes }) {
-                if (dataRes.message === data.message) {
-                    BirdNetWorker.removeEventListener('message', onMessage)
-                    resolve(dataRes)
-                }
-            }
-            BirdNetWorker.addEventListener('message', onMessage)
-        })
-    }
-
-    const geolocation = new Promise((resolve, reject) => {
-        navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: false })
-    })
-    await new Promise((resolve) => {
-        function onLoadingMessage({ data }) {
-            if (data.progress) {
-                document.querySelector('#loading-pane progress').value = data.progress
-            }
-            if (data.message === 'load_model') {
-                document.getElementById('progress_text').innerText = 'Loading BirdNET model...'
-            }
-            if (data.message === 'warmup') {
-                document.getElementById('progress_text').innerText = 'BirdNET warmup run...'
-            }
-            if (data.message === 'load_labels') {
-                document.getElementById('progress_text').innerText = 'Loading bird labels...'
-            }
-            if (data.message === 'load_geomodel') {
-                document.getElementById('progress_text').innerText = 'Loading geolocation model...'
-            }
-            if (data.message === 'loaded') {
-                BirdNetWorker.removeEventListener('message', onLoadingMessage)
-                resolve()
-            }
-        }
-        BirdNetWorker.addEventListener('message', onLoadingMessage)
-    })
-
-    const { coords: { latitude, longitude } } = await geolocation
-    await BirdNetJS({ message: 'area-scores', latitude, longitude })
-    return BirdNetJS
+function showError(err) {
+    document.getElementById('error').innerText = err.message
+    document.getElementById('error').innerHTML += '<br /><br />'
+    document.getElementById('error').innerText += err.stack
+    document.getElementById('error').style.display = 'block'
 }
