@@ -76,16 +76,15 @@ async function main() {
         }
         if (prediction.length > 0) {
             const encodedAudio = await encodeAudio(pcmAudio, 22050, 64000)
-            const audioSrc = URL.createObjectURL(encodedAudio)
+            const audioId = await state.db.putBirdCalls(prediction, encodedAudio)
             prediction.forEach((bird) => {
                 document.getElementById('view-filter').style.display = 'flex'
                 if (state.currentView === 'list') {
-                    document.getElementById('birdlist').prepend(birdCallItem({ ...bird, audioSrc }))
+                    document.getElementById('birdlist').prepend(birdCallItem({ ...audioId, audioId }))
                 } else {
                     addBirdToStatsScreen({ ...bird, count: 1 })
                 }
             })
-            await state.db.putBirdCalls(prediction, encodedAudio)
         }
     }
 }
@@ -207,11 +206,8 @@ async function displayBirdsStats(birdList) {
     }
 }
 
-async function displayBirdsCalls(birdList, db) {
-    for (let bird of birdList) {
-        const audioSrc = URL.createObjectURL(await db.getAudio(bird.audioId))
-        document.getElementById('birdlist').appendChild(birdCallItem({ ...bird, audioSrc }))
-    }
+async function displayBirdsCalls(birdList) {
+    document.getElementById('birdlist').append(...birdList.map(birdCallItem))
 }
 
 function addBirdToStatsScreen({ name, nameI18n, count=1 }) {
@@ -241,7 +237,24 @@ function addBirdToStatsScreen({ name, nameI18n, count=1 }) {
     birdListNode.insertBefore(birdView, firstBird)
 }
 
-function birdCallItem({ name, nameI18n, confidence, audioSrc }) {
+function formatTime(timestamp) {
+    const date = new Date(timestamp)
+    const now = new Date()
+    const isToday = date.toDateString() === now.toDateString()
+    const pad = (n) => String(n).padStart(2, '0')
+    const hours = pad(date.getHours())
+    const minutes = pad(date.getMinutes())
+    if (isToday) {
+        return `${hours}:${minutes}`;
+    } else {
+        const day = pad(date.getDate())
+        const month = pad(date.getMonth() + 1)
+        return `${day}/${month} ${hours}:${minutes}`
+    }
+}
+
+function birdCallItem({ time, name, nameI18n, confidence, audioId }) {
+    // const audioSrc = URL.createObjectURL(await db.getAudio(bird.audioId))
     const birdItem = document.createElement('div')
     birdItem.className = 'bird-call'
     const birdImage = document.createElement('img')
@@ -251,24 +264,18 @@ function birdCallItem({ name, nameI18n, confidence, audioSrc }) {
 
     const birdDetails = document.createElement('div')
     birdDetails.className = 'bird-details'
-
-    const audio = document.createElement('audio')
-    audio.controls = true
-    audio.src = audioSrc
-    birdDetails.appendChild(audio)
-
-    const title = document.createElement('span')
-    title.className = 'bird-details-title'
-    title.innerText = nameI18n
-
+    birdDetails.innerText = nameI18n
+    const status = document.createElement('div')
+    status.className = 'bird-details-status'
+    status.innerText = formatTime(time)
     const confidenceElem = document.createElement('span')
     confidenceElem.className = 'bird-details-confidence'
     confidenceElem.style.color = '#900'
     if (confidence > 0.3) { confidenceElem.style.color = '#FFFF55' }
     if (confidence > 0.6) { confidenceElem.style.color = '#00FF55' }
-    title.appendChild(confidenceElem)
     confidenceElem.innerText = `score: ${confidence.toFixed(2)}`
-    birdDetails.appendChild(title)
+    status.prepend(confidenceElem)
+    birdDetails.appendChild(status)
 
     birdItem.appendChild(birdImage)
     birdItem.appendChild(birdDetails)
@@ -305,6 +312,7 @@ async function database() {
                 })
                 tx.oncomplete = () => resolve()
             })
+            return audioId
         },
         async getLastBirdcalls() {
             return new Promise(resolve => {
