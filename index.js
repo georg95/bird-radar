@@ -1,7 +1,7 @@
 main().catch(showError)
 
 async function main() {
-    const BirdNetJS = await loadingScreen()
+    // const BirdNetJS = await loadingScreen()
     const state = {
         db: await database(),
         currentView: 'list',
@@ -80,7 +80,7 @@ async function main() {
             prediction.forEach((bird) => {
                 document.getElementById('view-filter').style.display = 'flex'
                 if (state.currentView === 'list') {
-                    document.getElementById('birdlist').prepend(birdCallItem({ ...audioId, audioId }))
+                    document.getElementById('birdlist').prepend(birdCallItemShort({ ...bird, audioId }, db))
                 } else {
                     addBirdToStatsScreen({ ...bird, count: 1 })
                 }
@@ -206,8 +206,8 @@ async function displayBirdsStats(birdList) {
     }
 }
 
-async function displayBirdsCalls(birdList) {
-    document.getElementById('birdlist').append(...birdList.map(birdCallItem))
+async function displayBirdsCalls(birdList, db) {
+    document.getElementById('birdlist').append(...birdList.map(bird => birdCallItemShort(bird, db)))
 }
 
 function addBirdToStatsScreen({ name, nameI18n, count=1 }) {
@@ -253,9 +253,18 @@ function formatTime(timestamp) {
     }
 }
 
-function birdCallItem({ time, name, nameI18n, confidence, audioId }) {
-    // const audioSrc = URL.createObjectURL(await db.getAudio(bird.audioId))
+let activeBirdItem = null
+function birdCallItemShort({ time, name, geoscore, nameI18n, confidence, audioId }, db) {
     const birdItem = document.createElement('div')
+    birdItem.onclick = async () => {
+        activeBirdItem?.removeFocus()
+        const birdItemFull = birdCallItemFull({ time, name, geoscore, nameI18n, confidence, audioId }, db)
+        activeBirdItem = birdItemFull
+        birdItem.replaceWith(birdItemFull)
+        birdItemFull.removeFocus = () => {
+            birdItemFull.replaceWith(birdItem)
+        }
+    }
     birdItem.className = 'bird-call'
     const birdImage = document.createElement('img')
     birdImage.src = `birds/${name[0]}/${name}.jpg`
@@ -279,6 +288,54 @@ function birdCallItem({ time, name, nameI18n, confidence, audioId }) {
 
     birdItem.appendChild(birdImage)
     birdItem.appendChild(birdDetails)
+    return birdItem
+}
+
+function birdCallItemFull({ time, name, nameI18n, confidence, audioId, geoscore }, db) {
+    const birdItem = document.createElement('div')
+    birdItem.className = 'bird-call-full'
+    const birdImage = document.createElement('img')
+    birdImage.src = `birds/${name[0]}/${name}.jpg`
+    birdImage.onerror = () => { birdImage.src='birds/unknown.webp' }
+    birdImage.title = nameI18n
+    birdItem.appendChild(birdImage)
+
+    const birdTitle = document.createElement('h3')
+    birdTitle.innerText = nameI18n
+    birdItem.appendChild(birdTitle)
+
+    const audio = document.createElement('audio')
+    audio.controls = true
+    db.getAudio(audioId).then(blob => { audio.src = URL.createObjectURL(blob) })
+    birdItem.appendChild(audio)
+
+    const timeElement = document.createElement('span')
+    timeElement.innerText = formatTime(time)
+    birdItem.appendChild(timeElement)
+
+    const confidenceElem = document.createElement('span')
+    confidenceElem.style.color = '#900'
+    if (confidence > 0.3) { confidenceElem.style.color = '#FFFF55' }
+    if (confidence > 0.6) { confidenceElem.style.color = '#00FF55' }
+    confidenceElem.innerText = `Confidence: ${confidence.toFixed(2)}`
+    birdItem.appendChild(confidenceElem)
+
+    const geoscoreElem = document.createElement('span')
+    geoscoreElem.innerText = 'Rarity: '
+    const geoscoreLabel = document.createElement('span')
+    geoscoreLabel.style.color = '#900'
+    geoscoreLabel.innerText = 'rare'
+    if (geoscore > 0.3) {
+        geoscoreLabel.style.color = '#FFFF55'
+        geoscoreLabel.innerText = 'uncommon'
+    }
+    if (geoscore > 0.6) {
+        geoscoreLabel.style.color = '#00FF55'
+        geoscoreLabel.innerText = 'common'
+    }
+    geoscoreElem.appendChild(geoscoreLabel)
+    birdItem.appendChild(geoscoreElem)
+
     return birdItem
 }
 

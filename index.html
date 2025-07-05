@@ -163,6 +163,7 @@
         .bird-call {
             display: flex;
             width: 100%;
+            cursor: pointer;
         }
         .bird-call + .bird-call {
             margin-top: 10px;
@@ -183,6 +184,19 @@
         }
         .bird-details-confidence {
             margin-right: 10px;
+        }
+        .bird-call-full {
+            display: flex;
+            flex-direction: column;
+            margin: 20px 0;
+            border: 1px solid;
+            padding: 15px;
+        }
+        .bird-call-full > span {
+            margin-top: 15px;
+        }
+        .bird-call-full > h3 {
+            margin: 15px 0;
         }
         #view-filter {
             padding: 0 20px;
