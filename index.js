@@ -4,7 +4,6 @@ async function main() {
     // const BirdNetJS = await loadingScreen()
     const state = {
         db: await database(),
-        currentView: 'list',
         settings: {}
     }
     document.getElementById('loading-pane').style.display = 'none'
@@ -14,8 +13,8 @@ async function main() {
         document.getElementById('record').className = 'start'
         document.getElementById('record-icon').className = 'paused-icon'
     })
-    prepareUI(state)
-    await prepareSettings(state)
+    const { addBirdToUI } = showDetectedBirdsUI(state)
+    await prepareSettingsUI(state)
 
     let audioContext = null
     async function onRecordButton() {
@@ -77,14 +76,7 @@ async function main() {
         if (prediction.length > 0) {
             const encodedAudio = await encodeAudio(pcmAudio, 22050, 64000)
             const audioId = await state.db.putBirdCalls(prediction, encodedAudio)
-            prediction.forEach((bird) => {
-                document.getElementById('view-filter').style.display = 'flex'
-                if (state.currentView === 'list') {
-                    document.getElementById('birdlist').prepend(birdCallItemShort({ ...bird, audioId }, db))
-                } else {
-                    addBirdToStatsScreen({ ...bird, count: 1 })
-                }
-            })
+            prediction.forEach((bird) => addBirdToUI({ ...bird, audioId }))
         }
     }
 }
@@ -140,38 +132,69 @@ async function loadingScreen() {
     return BirdNetJS
 }
 
-function prepareUI(state) {
+function showDetectedBirdsUI(state) {
     navigator.wakeLock?.request('screen').catch(showError)
-    displayBirds()
-    async function displayBirds() {
+    let currentView = 'list'
+    let viewSettings = null
+    displayBirds('list')
+    async function displayBirds(view, settings=null) {
+        currentView = view
+        viewSettings = settings
         document.getElementById('birdlist').innerHTML = ''
-        const birdList = await state.db.getLastBirdcalls()
+        document.getElementById('switch-view').innerText = currentView === 'stat' ? '📜' : '📊'
+        let birdList = await state.db.getLastBirdcalls()
         if (birdList.length) {
             document.getElementById('view-filter').style.display = 'flex'
         }
         birdList.reverse()
-        if (state.currentView === 'list') {
-            await displayBirdsCalls(birdList, state.db)
-        } else if (state.currentView === 'stat') {
-            await displayBirdsStats(birdList)
+        if (currentView === 'list') {
+            document.getElementById('birdlist').append(...birdList.map(bird => birdCallItemShort(bird, state.db)))
+        } else if (currentView === 'filterlist') {
+            birdList = birdList.filter(({ name }) => name === viewSettings)
+            document.getElementById('birdlist').append(...birdList.map(bird => birdCallItemShort(bird, state.db)))
+        } else if (currentView === 'stat') {
+            const birdsMap = {}
+            for (let { name, nameI18n } of birdList) {
+                if (!birdsMap[name]) {
+                    birdsMap[name] = {
+                        name,
+                        nameI18n,
+                        count: 0,
+                    }
+                }
+                birdsMap[name].count++
+            }
+            for (let name in birdsMap) {
+                const birdItem = addBirdToStatsScreen(birdsMap[name])
+                if (birdItem) {
+                    birdItem.onclick = () => displayBirds('filterlist', name)
+                }
+            }
+        }
+    }
+    async function addBirdToUI(bird) {
+        document.getElementById('view-filter').style.display = 'flex'
+        if (currentView === 'list') {
+            document.getElementById('birdlist').prepend(birdCallItemShort(bird, state.db))
+        } else if (currentView === 'filterlist') {
+            if (bird.name === viewSettings) {
+                document.getElementById('birdlist').prepend(birdCallItemShort(bird, state.db))
+            }
+        } else if (currentView === 'stat') {
+            const birdItem = addBirdToStatsScreen({ ...bird, count: 1 })
+            if (birdItem) {
+                birdItem.onclick = () => displayBirds('filterlist', bird.name)
+            }
         }
     }
     document.getElementById('switch-view').onclick = () => {
-        state.currentView = state.currentView === 'list' ? 'stat' : 'list'
-        document.getElementById('switch-view').innerText = state.currentView === 'list' ? '📊' : '📜'
-        displayBirds()
+        displayBirds(currentView === 'stat' ? 'list' : 'stat')
     }
-    document.getElementById('show-settings').onclick = () => {
-        document.getElementById('settings-pane').style.display = 'flex'
-        document.getElementById('record-pane').style.display = 'none'
-    }
-    document.getElementById('hide-settings').onclick = () => {
-        document.getElementById('settings-pane').style.display = 'none'
-        document.getElementById('record-pane').style.display = 'flex'
-    }
+
+    return { addBirdToUI }
 }
 
-async function prepareSettings(state) {
+async function prepareSettingsUI(state) {
     const devices = (await navigator.mediaDevices.enumerateDevices()).filter(({ kind }) => kind === 'audioinput')
     const audioSelect = document.querySelector('select')
     devices.forEach(device => {
@@ -187,27 +210,14 @@ async function prepareSettings(state) {
         }
     })
     state.settings.selectedInput = (devices.find(d => d.deviceId === 'default') || devices[0]).deviceId
-}
-
-async function displayBirdsStats(birdList) {
-    const birdsMap = {}
-    for (let { name, nameI18n } of birdList) {
-        if (!birdsMap[name]) {
-            birdsMap[name] = {
-                name,
-                nameI18n,
-                count: 0,
-            }
-        }
-        birdsMap[name].count++
+    document.getElementById('show-settings').onclick = () => {
+        document.getElementById('settings-pane').style.display = 'flex'
+        document.getElementById('record-pane').style.display = 'none'
     }
-    for (let name in birdsMap) {
-        addBirdToStatsScreen(birdsMap[name])
+    document.getElementById('hide-settings').onclick = () => {
+        document.getElementById('settings-pane').style.display = 'none'
+        document.getElementById('record-pane').style.display = 'flex'
     }
-}
-
-async function displayBirdsCalls(birdList, db) {
-    document.getElementById('birdlist').append(...birdList.map(bird => birdCallItemShort(bird, db)))
 }
 
 function addBirdToStatsScreen({ name, nameI18n, count=1 }) {
@@ -235,6 +245,7 @@ function addBirdToStatsScreen({ name, nameI18n, count=1 }) {
     birdView.appendChild(birdCounter)
     birdView.appendChild(birdName)
     birdListNode.insertBefore(birdView, firstBird)
+    return birdView
 }
 
 function formatTime(timestamp) {
