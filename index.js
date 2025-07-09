@@ -1,7 +1,7 @@
 main().catch(showError)
 
 async function main() {
-    // const BirdNetJS = await loadingScreen()
+    const BirdNetJS = await loadingScreen()
     const state = {
         db: await database(),
         settings: {}
@@ -58,9 +58,19 @@ async function main() {
             .connect(zeroGain)
             .connect(audioContext.destination) // some browsers optimize away graph with no destination
 
-        workletNode.port.onmessage = (event) => processAudioBatch(event).catch(showError)
+        const queueAudioProcess = (() => {
+            let pending = Promise.resolve()
+            const run = async (event) => {
+                await pending
+                return processAudioBatch(event)
+            }
+            return (event) => (pending = run(event).catch(showError))
+        })()
+        workletNode.port.onmessage = queueAudioProcess
         return audioContext
     }
+    let recordingBird = {}
+    let prevAudio = null
     async function processAudioBatch(event) {
         const pcmAudio = new Float32Array(event.data)
         const start = Date.now()
@@ -73,11 +83,29 @@ async function main() {
         if (load > 50) {
             document.getElementById('ai-icon').className = 'ai-slow-speed'
         }
+        let recordingBirdsNew = {}
         if (prediction.length > 0) {
-            const encodedAudio = await encodeAudio(pcmAudio, 22050, 64000)
-            const audioId = await state.db.putBirdCalls(prediction, encodedAudio)
-            prediction.forEach((bird) => addBirdToUI({ ...bird, audioId }))
+            const time = Date.now()
+            const startAudioId = prevAudio ? await state.db.putEncodedAudio(prevAudio) : null
+            const currentAudioId = await state.db.putEncodedAudio(pcmAudio)
+            for (let bird of prediction) {
+                console.log('recordingBird:', recordingBird, `(${bird.name}) ->`, recordingBird[bird.name])
+                const key = recordingBird[bird.name]
+                if (key) {
+                    recordingBirdsNew[bird.name] = key
+                    await state.db.addBirdCallAudio(key, currentAudioId)
+                } else {
+                    recordingBirdsNew[bird.name] = await state.db.putBirdCalls({
+                        ...bird,
+                        time,
+                        audioIds: startAudioId ? [startAudioId, currentAudioId] : [currentAudioId]
+                    })
+                    addBirdToUI({ ...bird, time, key: recordingBirdsNew[bird.name] })
+                }
+            }
         }
+        recordingBird = recordingBirdsNew
+        prevAudio = pcmAudio.slice(pcmAudio.length - 22050)
     }
 }
 
@@ -235,7 +263,11 @@ function addBirdToStatsScreen({ name, nameI18n, count=1 }) {
     birdView.id = name
     const birdImage = document.createElement('img')
     birdImage.src = `birds/${name[0]}/${name}.jpg`
-    birdImage.onerror = () => { birdImage.src='birds/unknown.webp' }
+    birdImage.onerror = () => {
+        if (birdImage.src !== 'birds/unknown.webp') { // fix recursive error when unknown.webp is not loaded due to network
+            birdImage.src = 'birds/unknown.webp'
+        }
+    }
     const birdCounter = document.createElement('div')
     birdCounter.className = 'counter'
     birdCounter.innerText = count
@@ -265,11 +297,12 @@ function formatTime(timestamp) {
 }
 
 let activeBirdItem = null
-function birdCallItemShort({ time, name, geoscore, nameI18n, confidence, audioId }, db) {
+function birdCallItemShort(bird, db) {
+    const { time, name, nameI18n, confidence } = bird
     const birdItem = document.createElement('div')
     birdItem.onclick = async () => {
         activeBirdItem?.removeFocus()
-        const birdItemFull = birdCallItemFull({ time, name, geoscore, nameI18n, confidence, audioId }, db)
+        const birdItemFull = birdCallItemFull(bird, db)
         activeBirdItem = birdItemFull
         birdItem.replaceWith(birdItemFull)
         birdItemFull.removeFocus = () => {
@@ -302,7 +335,68 @@ function birdCallItemShort({ time, name, geoscore, nameI18n, confidence, audioId
     return birdItem
 }
 
-function birdCallItemFull({ time, name, nameI18n, confidence, audioId, geoscore }, db) {
+async function concatBlobsToWavBlob(blobs) {
+    const audioCtx = new AudioContext()
+    const decodedBuffers = []
+    for (const blob of blobs) {
+        const arrayBuffer = await blob.arrayBuffer()
+        const decoded = await audioCtx.decodeAudioData(arrayBuffer)
+        decodedBuffers.push(decoded)
+    }
+    const totalLength = decodedBuffers.reduce((sum, buf) => sum + buf.length, 0)
+    const outputBuffer = audioCtx.createBuffer(1, totalLength, decodedBuffers[0].sampleRate)
+    let offset = 0
+    for (const buffer of decodedBuffers) {
+        outputBuffer.getChannelData(0).set(buffer.getChannelData(0), offset)
+        offset += buffer.length
+    }
+    const wavBlob = audioBufferToWavBlob(outputBuffer)
+    audioCtx.close()
+    return wavBlob
+}
+function audioBufferToWavBlob(buffer) {
+    const inputBuf = buffer.getChannelData(0)
+    const numChannels = buffer.numberOfChannels;
+    const sampleRate = buffer.sampleRate;
+    const format = 1;
+    const bitDepth = 16;
+
+    const numSamples = buffer.length;
+    const blockAlign = numChannels * bitDepth / 8;
+    const byteRate = sampleRate * blockAlign;
+    const wavDataByteLength = numSamples * blockAlign;
+    const totalLength = 44 + wavDataByteLength;
+
+    const wav = new DataView(new ArrayBuffer(totalLength));
+    writeString(wav, 0, 'RIFF');
+    wav.setUint32(4, 36 + wavDataByteLength, true);
+    writeString(wav, 8, 'WAVE');
+    writeString(wav, 12, 'fmt ');
+    wav.setUint32(16, 16, true); // subchunk size
+    wav.setUint16(20, format, true); // PCM
+    wav.setUint16(22, numChannels, true);
+    wav.setUint32(24, sampleRate, true);
+    wav.setUint32(28, byteRate, true);
+    wav.setUint16(32, blockAlign, true);
+    wav.setUint16(34, bitDepth, true);
+    writeString(wav, 36, 'data');
+    wav.setUint32(40, wavDataByteLength, true);
+
+    let offset = 44;
+    for (let i = 0; i < numSamples; i++) {
+        wav.setInt16(offset, inputBuf[i] * 0x7FFF, true)
+        offset += 2
+    }
+    return new Blob([wav.buffer], { type: 'audio/wav' })
+}
+
+function writeString(view, offset, str) {
+    for (let i = 0; i < str.length; i++) {
+        view.setUint8(offset + i, str.charCodeAt(i))
+    }
+}
+
+function birdCallItemFull({ time, name, nameI18n, confidence, audioIds, key, geoscore }, db) {
     const birdItem = document.createElement('div')
     birdItem.className = 'bird-call-full'
     const birdImage = document.createElement('img')
@@ -317,7 +411,15 @@ function birdCallItemFull({ time, name, nameI18n, confidence, audioId, geoscore 
 
     const audio = document.createElement('audio')
     audio.controls = true
-    db.getAudio(audioId).then(blob => { audio.src = URL.createObjectURL(blob) })
+    async function getAudioIds() {
+        if (!key) { return audioIds }
+        // audio still updated
+        return db.getBird(key).then(bird => bird.audioIds)
+    }
+    getAudioIds()
+        .then(audioIds => db.getAudio(audioIds))
+        .then(concatBlobsToWavBlob)
+        .then(blob => { audio.src = URL.createObjectURL(blob) })
     birdItem.appendChild(audio)
 
     const timeElement = document.createElement('span')
@@ -352,7 +454,7 @@ function birdCallItemFull({ time, name, nameI18n, confidence, audioId, geoscore 
 
 async function database() {
     const db = await new Promise((resolve, reject) => {
-        const request = indexedDB.open('Birdcalls')
+        const request = indexedDB.open('Birdcalls', 2)
         request.onerror = () => reject('Cant save birds calls in IndexedDB')
         request.onsuccess = (event) => resolve(event.target.result)
         request.onupgradeneeded = (event) => {
@@ -364,24 +466,45 @@ async function database() {
         }
     })
 
+    async function getBird(key) {
+        return new Promise(resolve => {
+            const tx = db.transaction('birds', 'readonly')
+            const objectStore = tx.objectStore('birds')
+            const request = objectStore.get(key)
+            request.onsuccess = (event) => {
+                resolve(event.target.result)
+            }
+        })
+    }
+
     return {
-        async putBirdCalls(guessList, encodedAudio) {
-            const time = Date.now()
-            const audioId = await new Promise(resolve => {
+        async addBirdCallAudio(key, audioId) {
+            const bird = await getBird(key)
+            bird.audioIds.push(audioId)
+            return new Promise(resolve => {
+                const tx = db.transaction('birds', 'readwrite')
+                const objectStore = tx.objectStore('birds')
+                objectStore.put(bird, key)
+                tx.oncomplete = () => resolve(key)
+            })
+        },
+        async putBirdCalls(bird) {
+            return new Promise(resolve => {
+                const tx = db.transaction('birds', 'readwrite')
+                const objectStore = tx.objectStore('birds')
+                let key = objectStore.add(bird)
+                tx.oncomplete = () => resolve(key.result)
+            })
+        },
+        async putEncodedAudio(pcmAudio) {
+            const encodedAudio = await encodeAudio(pcmAudio, 22050, 64000)
+            return new Promise(resolve => {
                 const tx = db.transaction('audio', 'readwrite')
                 const audioPut = tx.objectStore('audio').add(encodedAudio)
                 tx.oncomplete = () => resolve(audioPut.result)
             })
-            await new Promise(resolve => {
-                const tx = db.transaction('birds', 'readwrite')
-                const objectStore = tx.objectStore('birds')
-                guessList.forEach(bird => {
-                    objectStore.add({ ...bird, time, audioId })
-                })
-                tx.oncomplete = () => resolve()
-            })
-            return audioId
         },
+        getBird,
         async getLastBirdcalls() {
             return new Promise(resolve => {
                 const tx = db.transaction('birds', 'readonly')
@@ -392,15 +515,16 @@ async function database() {
                 }
             })
         },
-        async getAudio(id) {
-            return new Promise(resolve => {
-                const tx = db.transaction('audio', 'readonly')
-                const objectStore = tx.objectStore('audio')
+        async getAudio(ids) {
+            const tx = db.transaction('audio', 'readonly')
+            const objectStore = tx.objectStore('audio')
+
+            return Promise.all(ids.map(id => new Promise(resolveAudio => {
                 const request = objectStore.get(id)
                 request.onsuccess = (event) => {
-                    resolve(event.target.result)
+                    resolveAudio(event.target.result)
                 }
-            })
+            })))
         }
     }
 }
