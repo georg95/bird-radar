@@ -13,7 +13,7 @@ async function main() {
         document.getElementById('record').className = 'start'
         document.getElementById('record-icon').className = 'paused-icon'
     })
-    const { addBirdToUI } = showDetectedBirdsUI(state)
+    const { addBirdToUI, updateBirdUI } = showDetectedBirdsUI(state)
     await prepareSettingsUI(state)
 
     let audioContext = null
@@ -88,19 +88,20 @@ async function main() {
             const time = Date.now()
             const startAudioId = prevAudio ? await state.db.putEncodedAudio(prevAudio) : null
             const currentAudioId = await state.db.putEncodedAudio(pcmAudio)
-            for (let bird of prediction) {
-                console.log('recordingBird:', recordingBird, `(${bird.name}) ->`, recordingBird[bird.name])
-                const key = recordingBird[bird.name]
-                if (key) {
-                    recordingBirdsNew[bird.name] = key
-                    await state.db.addBirdCallAudio(key, currentAudioId)
+            for (let birdCall of prediction) {
+                const bird = recordingBird[birdCall.name]
+                console.log('recordingBird:', recordingBird, `(${birdCall.name}) ->`, bird)
+                if (bird) {
+                    recordingBirdsNew[bird.name] = bird
+                    bird.confidence.push(birdCall.confidence)
+                    bird.audioIds.push(currentAudioId)
+                    updateBirdUI(bird)
+                    await state.db.updateBird(bird)
                 } else {
-                    recordingBirdsNew[bird.name] = await state.db.putBirdCalls({
-                        ...bird,
-                        time,
-                        audioIds: startAudioId ? [startAudioId, currentAudioId] : [currentAudioId]
-                    })
-                    addBirdToUI({ ...bird, time, key: recordingBirdsNew[bird.name] })
+                    const bird = { ...birdCall, confidence: [birdCall.confidence], time, audioIds: startAudioId ? [startAudioId, currentAudioId] : [currentAudioId] }
+                    bird.dbKey = await state.db.putBird(bird)
+                    recordingBirdsNew[bird.name] = bird
+                    addBirdToUI(bird)
                 }
             }
         }
@@ -202,12 +203,8 @@ function showDetectedBirdsUI(state) {
     }
     async function addBirdToUI(bird) {
         document.getElementById('view-filter').style.display = 'flex'
-        if (currentView === 'list') {
+        if (currentView === 'list' || (currentView === 'filterlist' && bird.name === viewSettings)) {
             document.getElementById('birdlist').prepend(birdCallItemShort(bird, state.db))
-        } else if (currentView === 'filterlist') {
-            if (bird.name === viewSettings) {
-                document.getElementById('birdlist').prepend(birdCallItemShort(bird, state.db))
-            }
         } else if (currentView === 'stat') {
             const birdItem = addBirdToStatsScreen({ ...bird, count: 1 })
             if (birdItem) {
@@ -219,7 +216,15 @@ function showDetectedBirdsUI(state) {
         displayBirds(currentView === 'stat' ? 'list' : 'stat')
     }
 
-    return { addBirdToUI }
+    async function updateBirdUI(bird) {
+        if (currentView === 'list' || (currentView === 'filterlist' && bird.name === viewSettings)) {
+            document.querySelector(`#bird-short-${bird.dbKey}`).replaceWith(birdCallItemShort(bird, state.db))
+        } else if (currentView === 'stat') {
+            addBirdToStatsScreen({ ...bird, count: 0 })
+        }
+    }
+
+    return { addBirdToUI, updateBirdUI }
 }
 
 async function prepareSettingsUI(state) {
@@ -298,15 +303,20 @@ function formatTime(timestamp) {
 
 let activeBirdItem = null
 function birdCallItemShort(bird, db) {
-    const { time, name, nameI18n, confidence } = bird
+    const { time, dbKey, name, nameI18n, confidence } = bird
     const birdItem = document.createElement('div')
+    if (dbKey) {
+        birdItem.id = `bird-short-${dbKey}`
+    }
     birdItem.onclick = async () => {
         activeBirdItem?.removeFocus()
         const birdItemFull = birdCallItemFull(bird, db)
         activeBirdItem = birdItemFull
-        birdItem.replaceWith(birdItemFull)
+        birdItem.style.display = 'none'
+        birdItem.parentNode.insertBefore(birdItemFull, birdItem)
         birdItemFull.removeFocus = () => {
-            birdItemFull.replaceWith(birdItem)
+            birdItemFull.remove()
+            birdItem.style.display = ''
         }
     }
     birdItem.className = 'bird-call'
@@ -324,9 +334,10 @@ function birdCallItemShort(bird, db) {
     const confidenceElem = document.createElement('span')
     confidenceElem.className = 'bird-details-confidence'
     confidenceElem.style.color = '#900'
-    if (confidence > 0.3) { confidenceElem.style.color = '#FFFF55' }
-    if (confidence > 0.6) { confidenceElem.style.color = '#00FF55' }
-    confidenceElem.innerText = `score: ${confidence.toFixed(2)}`
+    const confidencScore = Math.max.apply(Math, confidence)
+    if (confidencScore > 0.3) { confidenceElem.style.color = '#FFFF55' }
+    if (confidencScore > 0.6) { confidenceElem.style.color = '#00FF55' }
+    confidenceElem.innerText = `score: ${confidencScore.toFixed(2)}`
     status.prepend(confidenceElem)
     birdDetails.appendChild(status)
 
@@ -427,10 +438,12 @@ function birdCallItemFull({ time, name, nameI18n, confidence, audioIds, key, geo
     birdItem.appendChild(timeElement)
 
     const confidenceElem = document.createElement('span')
-    confidenceElem.style.color = '#900'
-    if (confidence > 0.3) { confidenceElem.style.color = '#FFFF55' }
-    if (confidence > 0.6) { confidenceElem.style.color = '#00FF55' }
-    confidenceElem.innerText = `Confidence: ${confidence.toFixed(2)}`
+    confidenceElem.innerHTML = 'Confidence: ' + confidence.map(conf => {
+        let color = '#900'
+        if (conf > 0.3) { color = '#FFFF55' }
+        if (conf > 0.6) { color = '#00FF55' }
+        return `<span style="color: ${color}">${conf.toFixed(2)}</span>`
+    }).join(', ')
     birdItem.appendChild(confidenceElem)
 
     const geoscoreElem = document.createElement('span')
@@ -478,17 +491,7 @@ async function database() {
     }
 
     return {
-        async addBirdCallAudio(key, audioId) {
-            const bird = await getBird(key)
-            bird.audioIds.push(audioId)
-            return new Promise(resolve => {
-                const tx = db.transaction('birds', 'readwrite')
-                const objectStore = tx.objectStore('birds')
-                objectStore.put(bird, key)
-                tx.oncomplete = () => resolve(key)
-            })
-        },
-        async putBirdCalls(bird) {
+        async putBird(bird) {
             return new Promise(resolve => {
                 const tx = db.transaction('birds', 'readwrite')
                 const objectStore = tx.objectStore('birds')
@@ -496,15 +499,18 @@ async function database() {
                 tx.oncomplete = () => resolve(key.result)
             })
         },
-        async putEncodedAudio(pcmAudio) {
-            const encodedAudio = await encodeAudio(pcmAudio, 22050, 64000)
+        getBird,
+        async updateBird(bird) {
+            if (!bird.dbKey) {
+                throw new Error('cant update bird without dbKey')
+            }
             return new Promise(resolve => {
-                const tx = db.transaction('audio', 'readwrite')
-                const audioPut = tx.objectStore('audio').add(encodedAudio)
-                tx.oncomplete = () => resolve(audioPut.result)
+                const tx = db.transaction('birds', 'readwrite')
+                const objectStore = tx.objectStore('birds')
+                objectStore.put(bird, bird.dbKey)
+                tx.oncomplete = resolve
             })
         },
-        getBird,
         async getLastBirdcalls() {
             return new Promise(resolve => {
                 const tx = db.transaction('birds', 'readonly')
@@ -513,6 +519,14 @@ async function database() {
                 request.onsuccess = (event) => {
                     resolve(event.target.result)
                 }
+            })
+        },
+        async putEncodedAudio(pcmAudio) {
+            const encodedAudio = await encodeAudio(pcmAudio, 22050, 64000)
+            return new Promise(resolve => {
+                const tx = db.transaction('audio', 'readwrite')
+                const audioPut = tx.objectStore('audio').add(encodedAudio)
+                tx.oncomplete = () => resolve(audioPut.result)
             })
         },
         async getAudio(ids) {
