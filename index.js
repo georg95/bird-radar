@@ -269,7 +269,7 @@ function addBirdToStatsScreen({ name, nameI18n, count=1 }) {
     const birdImage = document.createElement('img')
     birdImage.src = `birds/${name[0]}/${name}.jpg`
     birdImage.onerror = () => {
-        if (!birdImage.endsWith('birds/unknown.webp')) { // fix recursive error when unknown.webp is not loaded due to network
+        if (!birdImage.src.endsWith('birds/unknown.webp')) { // fix recursive error when unknown.webp is not loaded due to network
             birdImage.src = 'birds/unknown.webp'
         }
     }
@@ -323,7 +323,7 @@ function birdCallItemShort(bird, db) {
     const birdImage = document.createElement('img')
     birdImage.src = `birds/${name[0]}/${name}.jpg`
     birdImage.onerror = () => {
-        if (!birdImage.endsWith('birds/unknown.webp')) { // fix recursive error when unknown.webp is not loaded due to network
+        if (!birdImage.src.endsWith('birds/unknown.webp')) { // fix recursive error when unknown.webp is not loaded due to network
             birdImage.src = 'birds/unknown.webp'
         }
     }
@@ -417,7 +417,7 @@ function birdCallItemFull({ time, name, nameI18n, confidence, audioIds, key, geo
     const birdImage = document.createElement('img')
     birdImage.src = `birds/${name[0]}/${name}.jpg`
     birdImage.onerror = () => {
-        if (!birdImage.endsWith('birds/unknown.webp')) { // fix recursive error when unknown.webp is not loaded due to network
+        if (!birdImage.src.endsWith('birds/unknown.webp')) { // fix recursive error when unknown.webp is not loaded due to network
             birdImage.src = 'birds/unknown.webp'
         }
     }
