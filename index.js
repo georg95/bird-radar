@@ -269,7 +269,7 @@ function addBirdToStatsScreen({ name, nameI18n, count=1 }) {
     const birdImage = document.createElement('img')
     birdImage.src = `birds/${name[0]}/${name}.jpg`
     birdImage.onerror = () => {
-        if (birdImage.src !== 'birds/unknown.webp') { // fix recursive error when unknown.webp is not loaded due to network
+        if (!birdImage.endsWith('birds/unknown.webp')) { // fix recursive error when unknown.webp is not loaded due to network
             birdImage.src = 'birds/unknown.webp'
         }
     }
@@ -322,7 +322,11 @@ function birdCallItemShort(bird, db) {
     birdItem.className = 'bird-call'
     const birdImage = document.createElement('img')
     birdImage.src = `birds/${name[0]}/${name}.jpg`
-    birdImage.onerror = () => { birdImage.src='birds/unknown.webp' }
+    birdImage.onerror = () => {
+        if (!birdImage.endsWith('birds/unknown.webp')) { // fix recursive error when unknown.webp is not loaded due to network
+            birdImage.src = 'birds/unknown.webp'
+        }
+    }
     birdImage.title = nameI18n
 
     const birdDetails = document.createElement('div')
@@ -412,7 +416,11 @@ function birdCallItemFull({ time, name, nameI18n, confidence, audioIds, key, geo
     birdItem.className = 'bird-call-full'
     const birdImage = document.createElement('img')
     birdImage.src = `birds/${name[0]}/${name}.jpg`
-    birdImage.onerror = () => { birdImage.src='birds/unknown.webp' }
+    birdImage.onerror = () => {
+        if (!birdImage.endsWith('birds/unknown.webp')) { // fix recursive error when unknown.webp is not loaded due to network
+            birdImage.src = 'birds/unknown.webp'
+        }
+    }
     birdImage.title = nameI18n
     birdItem.appendChild(birdImage)
 
@@ -467,8 +475,8 @@ function birdCallItemFull({ time, name, nameI18n, confidence, audioIds, key, geo
 
 async function database() {
     const db = await new Promise((resolve, reject) => {
-        const request = indexedDB.open('Birdcalls', 2)
-        request.onerror = () => reject('Cant save birds calls in IndexedDB')
+        const request = indexedDB.open('Birdcalls')
+        request.onerror = () => reject(new Error('Cant save birds calls in IndexedDB'))
         request.onsuccess = (event) => resolve(event.target.result)
         request.onupgradeneeded = (event) => {
             const db = event.target.result
